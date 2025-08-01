@@ -1,0 +1,240 @@
+This file contains my analysis of the combat log format as of
+2025-05-15 at SW:ToR release 7.6.1b.
+
+NOTE: When describing the general format of a field, optional
+subfields are shown surrounded by square brackets, the typical
+covention. Unfortunately, this somewhat conflicts with the fact that
+the the line format of the combat, which uses square brackets itself
+as a field delimiter, making it ambiguous. Sorry.
+
+Also note that the format uses pipe symbols (|), which is commonly
+used as an alteration indicator in most grammars, which also sucks
+majorly. 
+
+The file name represents the time that the logfile was created,
+roughly corresponding to the first entry in the log, although oddly
+not exactly. For example, for file combat_2025-03-21_10_09_48_793647.txt,
+the first line's timestamp is 10:10:07.496, almost 20s after the time
+in the filename.
+
+The file is a text-only, apparently ASCII, format composed of lines
+separated by CR/LF in my situation, since I'm interpreting logs saved
+by the Windows client. The line separator may be different depending
+on the host system.
+
+A line is composed of fields.
+
+Fields are surrounded by square brackets []. There are re apparently 5
+fields per line. There is an "extra" field in parens not surrounded by
+square brackets for some events that have additional values.
+
+An entire line might look like:
+
+[time] [source] [target] [what] [details] (value)
+
+The final value field may not be present and appears when resources
+are being gained or lostl An example is it shows how much energy is
+lost after an ability is activated and when energy is restored. In one
+log it shows when a tactical advantage is gained or lost. Note that
+when resources like the latter go to 0, they show up as an effect
+being removed and not as 0.
+
+Fields organize subfields in various ways.
+
+The first field is always the time of day to tne nearest millisecond:
+
+10:10:07.496
+
+The second field contains identifying information on the source of the
+action. The subfields present:
+
+'[' source '|' '(' coords ')' '|' '( 'unk1/unk2 ')' ']'
+
+source can have two different formats depending if it's a PC or an NPC
+
+If it's a PC:
+
+'@' pc_name '#' pc_name_id ['/' comp_name '{' comp_id '}' ':' comp_unk1]
+
+If it's an NPC:
+
+npc_name '{' npc_id '}' ':' npc_unk
+
+pc_name is text (including spaces)
+pc_name_id is a numeric id
+comp_name is the name of the currently active companion
+comp_id is the numeric id of the companion
+comp_unk is a numeric field that I don't understand
+npc_name is text
+npc_id is the numeric identifier
+npc_unk another unknown field
+coords is described below
+unk1/unk2 is unkown at this time
+
+coords is broken into 4 fields:
+
+coord_x, coord_y, coord_z, coord_unk3
+
+Axes are as you'd expect cenetered on 0,0,0
+
+x is horizontal with respect to east-west
+y is vertical with respect to north-south
+z increases rising higher and decreases sinking lower
+
+The fourth coordinate is uknown at this point.
+
+The third field represents the target of the event. The target field
+can be '=' which means, i believe, that the target is the same as the
+source. If the target differs from the source, it has the same format
+as the source.
+
+The fourth field indicates what is causing the event. This field can
+be empty ([]) meaning that the event doesn't have a specific
+cause. For example, resource auto-regeneration doesn't have a cause.
+
+
+
+
+
+
+
+
+rapid shots
+(-0.62,23.09,4.01,0.44) -> -30.61
+move up
+(-0.59,20.00,4.02,0.44) -> -43.44
+move down
+(-0.61,22.63,4.02,0.44) -> -22.92
+move right
+(+2.24,23.85,4.02,0.44) -> -12.44
+move left
+(+0.28,23.84,4.02,0.44) -> -23.81
+move to ramp base
+(-8.41,23.87,4.01,0.44) -> -54.71
+move up ramp
+(-8.39,16.40,8.52,0.44) -> -83.36
+move down ramp
+(-8.42,20.43,4.77,0.44) -> -66.47
+move off ramp
+(-8.45,23.16,4.01,0.44) -> -56.99
+
+Note that rapid shots is 10 separate attacks. The lines shown above
+are the initial ability activation. For the subsequent lines that show
+the hits and damage, the 4th coordinate changes in the manner shown
+after the arrow (->). Notice that there is no motion between any of
+the shots in the volley. So I have no idea what this final number
+means.
+
+
+
+log_line := base_log_line | log_line_with_value | log_line_with_threat
+
+base_log_line := time_field source_field target_field ability_field event_field
+
+time_field = '[' hours ':' minutes ':' seconds '.' milliseconds ']'
+
+source_field := '[' thing_id '|' loc '|' health ']'
+
+thing_id := pc_id | comp_id | npc_id
+
+pc_id = '@' pc_name '#' pc_id
+
+comp_id = pc_id '/' comp ':' comp_instance
+
+comp := name_id_instance
+
+name_id_instance := name_and_id ':' instance
+
+name_and_id = name '{' id '}'
+
+name := string of alphanum
+
+id := string of numeric
+
+instance = := string of numeric
+
+npc_id := name_id_instance
+
+loc := '(' x ',' y ',' z ',' rot ')'
+
+x := float
+
+y := float
+
+z := float
+
+rot := float
+
+health := '(' curr_health '/' total_health ')'
+
+thing_unk1 := string of numeric
+
+thing_unk2 := string of numeric
+
+target_field := '[]' | '[=]' | thing_id_and_loc
+
+ability_field := '[]' | name_and_id
+
+event_field = normal_event | discipline_changed_event
+
+normal_event = name_and_id ':' name_and_id
+
+discpline_changed event = name_and_id ':' name_and_id '/' name_and_id
+
+log_line_with_value := base_log_line value_field
+
+value_field := '(' value_and_details ')'
+
+value_and_details := '(' simple_val ')' | simple_val_type | reflected | shielded | absorbed | zero_val | counter_val
+
+simple_val := all_eff_val | init_val eff_val
+
+all_eff_val := maybe_crit_val
+
+maybe_crit_val := integer string | integer string '*'
+
+init_val := maybe_crit_val
+
+eff_val := '~' integer string
+
+simple_val_type := '(' simple_val val_type ')'
+
+val_type := name_and_id
+
+value_and_details quite complicated I see things like this:
+
+simple_val = (17110* ~8973) -> '(' init_val eff_val ')'
+
+simple_val_type = (4422* elemental {836045448940875})
+
+reflected = (25708 kinetic {836045448940873} (reflected {836045448953649})
+
+zero_val = (0 -parry {836045448945503})
+
+counter_val = (10 charges {836045448953667}
+
+shielded = (9570 kinetic {836045448940873} -shield {836045448945509} (10373 absorbed {836045448945511}))
+
+simple_val_type = (15425 kinetic {836045448940873})
+
+absorbed = (49192 ~34435 elemental {836045448940875} (14758 absorbed {836045448945511}))
+
+simple_val_type = (46459 elemental {836045448940875})
+
+simple_val = (1926)
+
+simple_val = (3385*)
+
+simple_val = (1699 ~0)
+
+missing entirely! not empty, not present with the delimiters at all
+
+zoer_val = (0 -immune {836045448945506})
+
+zero_val = (0 -dodge {836045448945505})
+
+zero_val = (0 -miss {836045448945502})
+
+zero_val = (0 -deflect {836045448945508})
+
+simple_val_type = (5894* internal {836045448940876})
