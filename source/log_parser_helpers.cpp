@@ -609,6 +609,8 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
     // INT name {id} -name {id} (INT name {id}): "2749 energy {...874} -shield {...509} (19364 absorbed {...511})"
     //              -v-    
     // INT name {id} -: "2749 ~0 energy {...874} -"
+    //              -v-
+    // INT name {id} -name {234}: "4012 ~0 elemental {123} -immune {345}"
     decltype(LogParserTypes::AbsorbedValue::absorbed_reason) absorbed_reason;
     if (field[0] == '-') {
         LL(info) << "Damage was partially absorbed by something.";
@@ -619,7 +621,8 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
                 .base_value = base_value,
                 .crit = crit,
                 .effective = effective,
-                .absorbed = 0
+                .absorbed = 0,
+                .detail = maybe_detail
             };
         }
         uint64_t dist_to_first_char_past_delim {};
@@ -630,6 +633,18 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
         }
         field.remove_prefix(dist_to_first_char_past_delim);
         field = lstrip(field, " ");
+    }
+
+    if (field.empty()) {
+        LL(info) << "No mitigation details provided. Continuing.";
+        return LogParserTypes::AbsorbedValue {
+            .base_value = base_value,
+            .crit = crit,
+            .effective = effective,
+            .absorbed = 0,
+            .detail = maybe_detail,
+            .absorbed_reason = absorbed_reason
+        };
     }
 
     // We've now handled the special case of a reason for the absorbed damage.

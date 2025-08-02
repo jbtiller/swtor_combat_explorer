@@ -128,7 +128,11 @@ auto main() -> int
             BLT_LINE(error, line_num) << linev;
             BLT_LINE(error, line_num) << "ts = " << log_entry->ts;
 
-            log_source_target(log_entry->source, line_num, "source");
+            if (!log_entry->source) {
+                BLT_LINE(error, line_num) << "Source field is empty.";
+            } else {
+                log_source_target(*log_entry->source, line_num, "source");
+            }
 
             if (!log_entry->target) {
                 BLT_LINE(error, line_num) << "Target field is empty.";

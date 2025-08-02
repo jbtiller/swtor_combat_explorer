@@ -319,6 +319,7 @@ public:
      *      shield, perhaps a sage bubble.
      * <li> `25708 kinetic {123}(reflected {234})`. I think this means the damage to the target was fully reflected back
      *      to the target? Such as: "[pc] [enemy] [saber reflect] [apply: dmg] (10 kinetic(reflected))"
+     * <li> `4012 ~0 elemental {123} -immune {345}`. Target was completely immune to source's damage.
      * <li> `4012 ~2809 energy {123} -shield {234} (1204 absorbed {345}`. Damage received was absorbed by the target's
      *      shield.
      * <li> `0 -parry {123}`. Incoming damage was completely mitigated, in this case by a "parry," most likely a passive

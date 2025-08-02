@@ -86,7 +86,7 @@ namespace LogParserTypes {
     using Threat = std::variant<double, std::string_view>;
     struct ParsedLogLine {
 	Timestamps::timestamp ts;
-	SourceOrTarget source;
+        std::optional<SourceOrTarget> source;
 	std::optional<SourceOrTarget> target;
 	NameId ability;
 	Action action;

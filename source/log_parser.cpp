@@ -7,6 +7,7 @@
 
 #include "log_parser.hpp"
 #include <boost/log/trivial.hpp>
+#include "log_parser_types.hpp"
 #include "logging.hpp"
 #include "timestamps.hpp"
 
@@ -39,18 +40,24 @@ auto LogParser::parse_line(sv line, int line_num, Timestamps& ts_parser) -> std:
     // BLT_LINE(error, line_num) << "ts field = " << std::quoted(*ts_field);
     line.remove_prefix(dist_beyond_field_delimiter);
 
-    // source field is always present and has 3 formats:
-    // PC/NPC/Comp. All 3 formats have the same trailing subfields: location health
+    // source field is always present and has 4 formats:
+    // Empty/PC/NPC/Comp. The non-empty have the same trailing subfields: location health
     auto source_field = m_lph.get_next_field(line, '[', ']', &dist_beyond_field_delimiter);
     if (!source_field) {
         BLT_LINE(fatal, line_num) << "Unable to extract the source field (#2) from the log line. Skipping.";
         return {};
     }
-    auto source = m_lph.parse_source_target_field(*source_field);
-    if (!source) {
-        BLT_LINE(fatal, line_num) << "Unable to parse source field. Skipping.";
-        return {};
+    decltype(LogParserTypes::ParsedLogLine::source) source;
+    if (source_field->empty()) {
+        BLT_LINE(info, line_num) << "Source is empty. Continuing.";
+    } else {
+        source = m_lph.parse_source_target_field(*source_field);
+        if (!source) {
+            BLT_LINE(fatal, line_num) << "Unable to parse source field. Skipping.";
+            return {};
+        }
     }
+
     // BLT_LINE(error, line_num) << "source field = " << std::quoted(*source_field);
     line.remove_prefix(dist_beyond_field_delimiter);
 
@@ -127,7 +134,7 @@ auto LogParser::parse_line(sv line, int line_num, Timestamps& ts_parser) -> std:
 
     LogParserTypes::ParsedLogLine ret;
     ret.ts = *ts;
-    ret.source = *source;
+    ret.source = source;
     ret.target = target;
     ret.ability = *ability;
     ret.action = *action;

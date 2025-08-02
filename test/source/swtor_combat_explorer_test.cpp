@@ -745,6 +745,21 @@ TEST(ParseValueField, ValidAbsorbedValue) {
     EXPECT_EQ(av.absorbed_reason->name, "shield");
     EXPECT_FALSE(av.reflected);
 
+    vfo = lph.parse_value_field("10 elemental {234} -immune {345}");
+    ASSERT_TRUE(vfo);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::AbsorbedValue>(*vfo));
+    av = std::get<LogParserTypes::AbsorbedValue>(*vfo);
+    EXPECT_EQ(av.base_value, 10);
+    EXPECT_FALSE(av.crit);
+    ASSERT_TRUE(av.detail);
+    EXPECT_EQ(av.detail->name, "elemental");
+    EXPECT_EQ(av.detail->id, 234);
+    ASSERT_FALSE(av.effective);
+    EXPECT_EQ(av.absorbed, 0);
+    ASSERT_TRUE(av.absorbed_reason);
+    EXPECT_EQ(av.absorbed_reason->name, "immune");
+    EXPECT_FALSE(av.reflected);
+
     vfo = lph.parse_value_field("7* baz {234} (reflected {456})");
     ASSERT_TRUE(vfo);
     ASSERT_TRUE(std::holds_alternative<LogParserTypes::AbsorbedValue>(*vfo));
