@@ -296,15 +296,17 @@ public:
      * <li> Damage might have an associated modality, like kinetic or internal
      * <li> Damage might be avoided entirely due to an ability
      * <li> Damage might simply be 0
+     * <li> Damage might be reflected
      * </ul>
      *
      * Many concepts are combined in this single field, which is why it has so many formats:
      *
      * <ol>
      * <li> `"he3001"`. No idea what this is but it's only present on AreaEntered, like a version
-     * <li> `"9608"`. A simple value
-     * <li> `"0"`. Special case - 0 damage hit or perhaps overhealing at full health.
-     * <li> `"3107*"`. A critical hit or heal
+     * <li> `9608`. A simple value
+     * <li> `0`. Special case - 0 damage hit or perhaps overhealing at full health.
+     * <li> `0 -`. Incoming damage was completely mitigated, but no reason given.
+     * <li> `3107*`. A critical hit or heal
      * <li> `3.0`. A double, but always representing an integer. Something to do with charges, etc.
      * <li> `5894 energy {123}`. For damage, this represents the type of damage. Can also be various kinds of points or
      *      charges, like "1 charges {123}". Any combination of base damage, crit, or mitigation can have a type
@@ -312,16 +314,15 @@ public:
      * <li> `13315 ~9902`. Some action had a base value of `13315` but only `9902` was applied due to mitigation
      *      (absorb, etc.). This might also be a critical hit (`13315*`).
      * <li> `248 ~0 energy {123} -`. Damage received was absorbed by something but it can't tell us. Probably a bug in
-     *      the logging code, to be honest.
+     *      the logging code, to be honest. Although I see this with overhealing, usually.
      * <li> `4012 ~2809 energy {123} (1204 absorbed {234}`. Damage received was absorbed by something other than a
-     *      shield.
+     *      shield, perhaps a sage bubble.
      * <li> `25708 kinetic {123}(reflected {234})`. I think this means the damage to the target was fully reflected back
-     *      to the target? Such as: "[pc] [enemy] [saber reflect {...}] [apply: dmg] (10 kinetic {...}(reflected...)"
+     *      to the target? Such as: "[pc] [enemy] [saber reflect] [apply: dmg] (10 kinetic(reflected))"
      * <li> `4012 ~2809 energy {123} -shield {234} (1204 absorbed {345}`. Damage received was absorbed by the target's
      *      shield.
      * <li> `0 -parry {123}`. Incoming damage was completely mitigated, in this case by a "parry," most likely a passive
      *      ability.
-     * <li> `0 -`. Incoming damage was completely mitigated, but no reason given.
      *
      * The return value is also somewhat complex, unfortunately, but it really boils down to holding this information:
      *

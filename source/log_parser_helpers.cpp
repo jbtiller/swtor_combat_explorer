@@ -474,7 +474,6 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
     LL(info) << "Parsing value from field " << std::quoted(field);
 
     // he3001
-    // .info = "he3001"
     if (field == "he3001") {
         LL(trace) << "Value is the unique sentinel " << std::quoted(field);
         return LogParserTypes::LogInfoValue {.info = "he3001"};
@@ -482,8 +481,6 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
 
     if (field[0] == '0') {
         // 0: "0"
-        // .base_value = 0
-        // .crit = false
         if (field.size() == 1) {
             LL(trace) << "Value is just 0 - fully mitigated.";
             return LogParserTypes::FullyMitigatedValue {};
@@ -493,7 +490,7 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
 
         if (field[0] == '-') {
             if (field.size() == 1) {
-                // 0 -: "0 -". Fully mitigated but no reason - I think this is probably a bug.
+                // 0 -: "0 -"
                 LL(trace) << "Value is \"0 -\" - fully mitigated, most likely a logging bug.";
                 return LogParserTypes::FullyMitigatedValue {};
             }
@@ -522,17 +519,13 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
     auto base_value = *maybe_base_value;
     LL(trace) << "base val = " << base_value;
 
-    // 2.  INT: "9608"
-    //     .base_value = 9608
-    //     .crit = false
+    // INT: "9608"
     if (dist_to_first_non_int_char == field.size()) {
         LL(trace) << "Value is " << base_value << ", a plain uint64_t.";
         return LogParserTypes::UnmitigatedValue {.base_value = base_value};
     }
 
-    // 4.  INT.0: "3.0"
-    //     .base_value = 3107
-    //     .crit = false
+    // INT.0: "3.0"
     if (field[dist_to_first_non_int_char] == '.') {
         uint64_t dist_to_last_double_char {};
         auto double_val = str_to_double(field, &dist_to_last_double_char);
@@ -549,7 +542,6 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
         }
     }
 
-    // Move beyond base value.
     LL(trace) << dist_to_first_non_int_char << " steps to move past base value integer.";
     field.remove_prefix(dist_to_first_non_int_char);
     LL(trace) << "First char after base value is " << field[0];
@@ -563,23 +555,15 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
     // Eat up spaces - technically there will only be one for complex values, but we'll let it slide this time.
     field = lstrip(field, " ");
 
-    // 3.  INT*: "3107*"
-    //     .base_value = 3107
-    //     .crit = true
+    // INT*: "3107*"
     if (field.length() == 0) {
         LL(trace) << "Value is a simple crit with base value = " << base_value;
         return LogParserTypes::UnmitigatedValue {.base_value = base_value, .crit = crit};
     }
 
-    // 7.  INT* ~INT: "17110* ~8973"
-    //     .base_value = 17110
-    //     .crit = true
-    //     .effective = 8973
-    // 8.  INT ~INT: "13315 ~9902"
-    //     .base_value = 13315
-    //     .crit = false
-    //     .effective = 9902
-    // NOTE: This means a toon's name should never start with a tilde.
+    // INT* ~INT: "17110* ~8973"
+    //
+    // INT ~INT: "13315 ~9902"
     decltype(LogParserTypes::UnmitigatedValue::effective) effective {};
     if (field[0] == '~') {
         LL(trace) << "Have effective value - base value is mitigated in some way.";
@@ -589,7 +573,6 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
             LL(warning) << "Unable to parse effective value as an uint64_t. Skipping.";
             return {};
         }
-        // Move beyond effective value.
         field.remove_prefix(dist_to_first_non_int_char);
         field = lstrip(field, " ");
 
@@ -599,23 +582,12 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
         }
     }
 
-    // At this point we're beyond the base and effective values and pointing to the first character of the
-    // next string, generally a name/id pair.
-
-    //        -v- we're here
-    // 5.  INT name {id}: "5824 energy {836045448940874}"
-    //     .base_value = 5824
-    //     .crit = false
-    //     .detail = {.name = energy, .id = 836045448940874
-    // 6.  INT* name {id}: "5894* internal {836045448940876}"
-    //     .base_value = 5894
-    //     .crit = true
-    //     .detail = {.name = internal, .id = 836045448940876
-    // 12. INT ~INT name {id}: "13315 ~9902 energy {...}"
-    //     .base_value = 13315
-    //     .crit = false
-    //     .detail = {.name = energy, .id = ...}
-    //     .effective = 9902
+    //    -v- we're here, past the base and effective values
+    // INT name {id}: "5824 energy {836045448940874}"
+    //     -v-
+    // INT* name {id}: "5894* internal {836045448940876}"
+    //         -v-
+    // INT ~INT name {id}: "13315 ~9902 energy {...}"
     auto maybe_detail = parse_name_and_id(field, &dist_to_first_non_int_char);
     if (!maybe_detail) {
         LL(warning) << "Expected name/id details for value but could not parse. Skipping";
@@ -629,19 +601,14 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
             .base_value = base_value, .crit = crit, .detail = maybe_detail, .effective = effective
         };
     }
+    field = lstrip(field, " ");
 
     // Now we're past the base, effective, and damage type.
 
-    //      We'ere here -v-
-    // 10. INT name {id} -name {id} (INT name {id}): "2749 energy {...874} -shield {...509} (19364 absorbed {...511})"
-    //     .value = 2749
-    //     .crit = false
-    //     .detail = {.name = energy, .id = ...874}
-    //     .absorbed = 19364
-    //     .absorbed_reason = {.name = shield, .id = {...509}
-    // XX. INT name {id} -: "2749 ~0 energy {...874} -"
-    //     .value = 2749
-    //     .crit = false
+    //  We'ere here -v-
+    // INT name {id} -name {id} (INT name {id}): "2749 energy {...874} -shield {...509} (19364 absorbed {...511})"
+    //              -v-    
+    // INT name {id} -: "2749 ~0 energy {...874} -"
     decltype(LogParserTypes::AbsorbedValue::absorbed_reason) absorbed_reason;
     if (field[0] == '-') {
         LL(info) << "Damage was partially absorbed by something.";
@@ -666,43 +633,39 @@ auto LogParserHelpers::parse_value_field(sv field) const -> std::optional<LogPar
     }
 
     // We've now handled the special case of a reason for the absorbed damage.
-    //                                                      we'ere here -v-
-    // 9.  INT ~INT name {id} (INT name {id}): 4012 ~2809 energy {...874} (1204 absorbed {...511})"
-    //     .value = 4012
-    //     .crit = false
-    //     .detail = {.name = energy, .id = ...874}
-    //     .effective = 2809
-    //     .absorbed = 1024
-    auto abs_field = get_next_field(field, '(', ')');
-    if (!abs_field) {
-        LL(warning) << "Could not extract damage amount absorbed field. Skipping.";
+    //                                                  we'ere here -v-
+    // INT ~INT name {id} (INT name {id}): 4012 ~2809 energy {...874} (1204 absorbed {...511})
+    //                                                     or perhaps (reflected {...})
+    auto mit_field = get_next_field(field, '(', ')');
+    if (!mit_field) {
+        LL(warning) << "Could not extract damage mitigation reason field. Skipping.";
         return {};
     }
 
-    auto maybe_absorbed = str_to_uint64(*abs_field, &dist_to_first_non_int_char);
-    if (!maybe_absorbed) {
-        LL(warning) << "Unable to parse damage absorbed amount. Skipping.";
-        return {};
+    auto maybe_mitigated = str_to_uint64(*mit_field, &dist_to_first_non_int_char);
+    uint64_t mitigated {};
+    if (!maybe_mitigated) {
+        LL(warning) << "Unable to parse damage mitigated amount. Continuing.";
+    } else {
+        mitigated = *maybe_mitigated;
+        mit_field->remove_prefix((dist_to_first_non_int_char));
+        mit_field = lstrip(*mit_field, " ");
     }
-    auto absorbed = *maybe_absorbed;
-    abs_field->remove_prefix((dist_to_first_non_int_char));
-    abs_field = lstrip(*abs_field, " ");
     
-    auto abs_info = parse_name_and_id(*abs_field);
-    if (!abs_info) {
-        LL(warning) << "Unable to parse absorption name. Continuing.";
-    } else if (abs_info->name != expected_mitigation_type) {
-        LL(warning) << "Expected mitigation type is " << std::quoted(expected_mitigation_type)
-                    << " but got " << std::quoted(abs_info->name) << " instead. Continuing.";
+    auto mit_info = parse_name_and_id(*mit_field);
+    if (!mit_info) {
+        LL(warning) << "Unable to parse mitigation type name. Continuing.";
     }
+    auto reflected = (mit_info->name == "reflected");
 
     return LogParserTypes::AbsorbedValue {
         .base_value = base_value,
         .crit = crit,
         .effective = effective,
-        .absorbed = absorbed,
+        .absorbed = mitigated,
         .detail = maybe_detail,
-        .absorbed_reason = absorbed_reason
+        .absorbed_reason = absorbed_reason,
+        .reflected = reflected
     };
 }
 

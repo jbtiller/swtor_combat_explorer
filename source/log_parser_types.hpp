@@ -67,6 +67,9 @@ namespace LogParserTypes {
 	std::optional<NameId> detail;
 	std::optional<uint64_t> effective;
     };
+    // absorbed and deflected have (almost) the exact same structure. Probably need to change this to "MitigatedValue"
+    // and store the mitigation type. Thank goodness increasing the level of abstraction solves all problems.  First
+    // step: add "reflected" boolean
     struct AbsorbedValue {
 	uint64_t base_value;
 	bool crit = false;
@@ -74,6 +77,7 @@ namespace LogParserTypes {
 	uint64_t absorbed;
 	std::optional<NameId> detail;
 	std::optional<NameId> absorbed_reason;
+        bool reflected = false;
     };
     struct FullyMitigatedValue {
         std::optional<NameId> damage_avoided_reason;
