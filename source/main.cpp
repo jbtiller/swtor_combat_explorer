@@ -13,6 +13,7 @@
 #include <memory>
 #include <map>
 
+#include "generator.hpp"
 #include "lib.hpp"
 #include "log_parser_types.hpp"
 #include "timestamps.hpp"
@@ -72,9 +73,16 @@ auto log_source_target(const LogParserTypes::SourceOrTarget& st, int line_num, s
     }
 }
 
+auto file_reader(std::ifstream& ifs) -> Generator<std::string> {
+    std::string line;
+    getline(ifs, line);
+    while(ifs.good()) {
+        co_yield line;
+        getline(ifs, line);
+    }
+}
 
-auto main() -> int
-{
+auto main(int argc, char** argv) -> int {
     if (const char* bl_level = std::getenv("BL_LEVEL")) {
         std::map<std::string,boost::log::trivial::severity_level> sevs {
             {"trace",   boost::log::trivial::trace},
@@ -91,26 +99,30 @@ auto main() -> int
             );
         }
     }
+
     auto const lib = library {};
+
     BLT(info) << "Hello '" << lib.name << "' World!";
+
+    for (int li = 1; li < argc; ++li) {
+        const auto log_path = std::string(argv[li]);
     // {"../../test/logs/combat_2025-05-15_13_31_56_714109.txt"};
-    const std::string log_path {"../../test/logs/combat_2025-04-20_19_52_15_159478.txt"};
+    // const std::string log_path {"../../test/logs/combat_2025-04-20_19_52_15_159478.txt"};
 
     parse_combat_log_filename_timestamp(log_path);
 
     std::ifstream log_in {log_path};
-    BLT(info) << "Opening stream: " << (log_in.good() ? "successful" : "unsuccessful");
+    if (!log_in.good()) {
+        BLT(error) << "Failed to open " << std::quoted(log_path) << "for reading. Skipping.";
+        continue;
+    }
+    BLT(info) << "Successfully opened "  << std::quoted(log_path) << " for reading.";
+
     int line_num = 0;
     LogParser lp;
 
-    while (log_in.good()) {
-        std::string line;
-        getline(log_in, line);
+    for(auto& line : file_reader(log_in)) {
         line_num += 1;
-        if (!log_in.good()) {
-          BLT_LINE(error, line_num) << "Error reading stream.  Giving up.";
-          continue;
-        }
 
         std::string_view linev(line);
         linev.remove_suffix(1); // Chomp final character, which is always a CR.
@@ -186,5 +198,7 @@ auto main() -> int
         }
     }
 
+    BLT(info) << "Done parsing file " << std::quoted(log_path);
+    }
     return 0;
 }

@@ -324,6 +324,7 @@ public:
      *      shield.
      * <li> `0 -parry {123}`. Incoming damage was completely mitigated, in this case by a "parry," most likely a passive
      *      ability.
+     * <li> `0.0`
      *
      * The return value is also somewhat complex, unfortunately, but it really boils down to holding this information:
      *
