@@ -183,14 +183,15 @@ public:
      *
      * <ol>
      * <li> PC: `"@name#id"`
-     * <li> Companion: `"@pc_name#pc_id/comp_name {comp_id}:comp_instance"`
+     * <li> Companion: `"PC/comp_name {comp_id}:comp_instance"`. `PC` is as per the `PC` case, although when part of a
+     *      Companion, it may be `@UNKNOWN`. I don't know why.
      * <li> NPC: `"name {id}:instance}"`
      * </ol>
      *
-     * For a PC, `name` is a string and `id` is parsed as `str_to_uint64()`. `name` can be empty.
+     * For a PC, `name` is a string and `id` as parsed by `parse_name_and_id()`.
      *
      * For a PC's companion, `pc_name` and `pc_id` are parsed as a PC and "comp_name {comp_id}:comp_instance" is parsed
-     * as per `parse_name_id_instance()`. `pc_name` can be empty.
+     * as per `parse_name_id_instance()`.
      *
      * For an NPC, "name {id}:instance" is parsed per `parse_name_id_instance()`.
      *
@@ -284,62 +285,84 @@ public:
     auto parse_action_field(std::string_view field) const -> std::optional<LogParserTypes::Action>;
 
     /**
+     * Parse the mitigation effect subfield of the value field
+     *
+     * The mitigation effect has this form:
+     *
+     * '(' effect_value? effect_name_id? ')'
+     *
+     * The parentheses should NOT be included in view parameter
+     *
+     * <ul>
+     * <li> `effect_value`: amount mitigated
+     * <li> `effect_name_id`: the type of mitigation effect, such as "absorbed" or "reflected"
+     * </ul>
+     *
+     * @param[in] field view to parse
+     *
+     * @returns On success, a true-evaluating optional populated with a MitigationEffect; on failure, a false-evaluating
+     * optional.
+     */
+    auto parse_mitigation_effect(std::string_view field) const -> std::optional<LogParserTypes::MitigationEffect>;
+
+    /**
      * Parse the value field
      *
      * The value field is optional. It's present when the action has some associated value, like damage, healing,
-     * charges, etc. This is the most complicated field in the log but it has these basic concepts:
+     * gaining/losing charges, etc. This is the most complicated field in the log but it has these basic concepts:
      *
      * <ul>
      * <li> Some value is changing, such as damage taken, heals received, charges expended, etc.
      * <li> The value might be as the result of a critical hit or heal
      * <li> Some of the damage or heal might not have been applied, perhaps due to absorption or overhealing
      * <li> Damage might have an associated modality, like kinetic or internal
-     * <li> Damage might be avoided entirely due to an ability
-     * <li> Damage might simply be 0
-     * <li> Damage might be reflected
+     * <li> Damage might mitigated for some reason
+     * <li> Damage mitigation might have another effect, like reflect
      * </ul>
      *
-     * Many concepts are combined in this single field, which is why it has so many formats:
+     * @note: There is a special log entry that's used when the PC enters an area that is unlike any other entry
+     * format. In this case, the value will be something like the string "he3001." I believe this might stand for "hero
+     * engine 3.0.0.1," but that's just a guess. Therefore, the return type is a std::variant to handle this one-off case
+     * and then the more standard value format.
+     *
+     * Many concepts are combined in this single field so that almost all parts of it are optional. Here are the components:
      *
      * <ol>
-     * <li> `"he3001"`. No idea what this is but it's only present on AreaEntered, like a version
-     * <li> `9608`. A simple value
-     * <li> `0`. Special case - 0 damage hit or perhaps overhealing at full health.
-     * <li> `0 -`. Incoming damage was completely mitigated, but no reason given.
-     * <li> `3107*`. A critical hit or heal
-     * <li> `3.0`. A double, but always representing an integer. Something to do with charges, etc.
-     * <li> `5894 energy {123}`. For damage, this represents the type of damage. Can also be various kinds of points or
-     *      charges, like "1 charges {123}". Any combination of base damage, crit, or mitigation can have a type
-     *      associated with it.
-     * <li> `13315 ~9902`. Some action had a base value of `13315` but only `9902` was applied due to mitigation
-     *      (absorb, etc.). This might also be a critical hit (`13315*`).
-     * <li> `248 ~0 energy {123} -`. Damage received was absorbed by something but it can't tell us. Probably a bug in
-     *      the logging code, to be honest. Although I see this with overhealing, usually.
-     * <li> `4012 ~2809 energy {123} (1204 absorbed {234}`. Damage received was absorbed by something other than a
-     *      shield, perhaps a sage bubble.
-     * <li> `25708 kinetic {123}(reflected {234})`. I think this means the damage to the target was fully reflected back
-     *      to the target? Such as: "[pc] [enemy] [saber reflect] [apply: dmg] (10 kinetic(reflected))"
-     * <li> `4012 ~0 elemental {123} -immune {345}`. Target was completely immune to source's damage.
-     * <li> `4012 ~2809 energy {123} -shield {234} (1204 absorbed {345}`. Damage received was absorbed by the target's
-     *      shield.
-     * <li> `0 -parry {123}`. Incoming damage was completely mitigated, in this case by a "parry," most likely a passive
-     *      ability.
-     * <li> `0.0`
-     *
-     * The return value is also somewhat complex, unfortunately, but it really boils down to holding this information:
-     *
-     * <ol>
-     * <li> The base value and if it's a critical hit
-     * <li> The effective value actually applied due to mitigation
-     * <li> The modality (`detail`) of the damage
-     * <li> How much damage was absorbed
-     * <li> Why the damage was absorbed
-     * <li> Mitigation reason if all damage was avoided
+     * <li> Base value: This is the only required field, something like the amount of damage or healing. This may not,
+     *      however, be the value that's applied to the target.
+     * <li> Critical: This indicates that the base value was a critical hit.
+     * <li> Effective value: This is the value that was actually applied to the target after the result of mitigation.
+     * <li> Value type: One type of value, damage, has various types that describe what kind of damage it is, such as
+     *      "elemental" or "internal" or "kinetic." The value type triggers some behaviors, such as an ability proc'ing
+     *      based on damage type or perhaps damage being mitigated based on type. If this isn't present for a damage value, 
+     *      then the damage is called "typeless."
+     * <li> Mitigation reason: The damage might be reduced and if so this reason describes why. This typically refers to
+     *      an ability the target has to reduce damage, such as a "shield" or maybe a "parry."
+
+     * <li> Mitigation effect: This is what happened when the damage was mitigated. The most common forms are
+     *      absorption, meaning the damage was mitigated by some ability (shield, sage bubble, etc.), or reflection,
+     *      where the damage was reflect (applied) back to the source. The mitigation effect can contain the amount of
+     *      the effect (the effect's value) and what the effect was.
      * </ol>
      *
-     * There is a special log entry that's used logged when the PC enters an area that is unlike any other entry
-     * format. Therefore, the return type is a std::variant to handle this one-off case and then the more standard value
-     * format.
+     * Here is a Python-compatible regex that describes the entire field, with named subfields:
+     *
+     * `(?P<base_val>...)\*? (~(?P<eff_val>...))? (-(?P<mit_reason>...)?)? (\(?P<mit_effect>...)\)?`
+     *
+     * @note: An effective value is always prefixed by a tilde `~`. The mitigation reason must be prefixed by a dash
+     * `-`-. The mitigation effect must be surrounded by parentheses `()`. 
+     *
+     * Details:
+     *
+     * <ul>
+     * <li> name: \w+
+     * <li> id: \d+
+     * <li> fp: A restricted form of a floating-point: `\d+(\.\d+)?`
+     * <li> Base value: `fp`
+     * <li> Effective value: `fp`
+     * <li> Mitigation reason: `name? {id}`
+     * <li> Mitigation effect: `(P<mit_eff_value>fp)? (P<mit_eff_type>name? {id})?`
+     * </ul>
      *
      * @param[in] view to be parsed
      *

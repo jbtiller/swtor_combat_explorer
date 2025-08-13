@@ -418,6 +418,9 @@ TEST(ParseSourceTargetSubject, PcInvalid) {
 
     sts = lph.parse_source_target_subject("@abc123");
     EXPECT_FALSE(sts);
+
+    sts = lph.parse_source_target_subject("@NOTUNKNOWN");
+    EXPECT_FALSE(sts);
 }
 
 // Uses same test inputs as ParseNameIdInstance but with a valid PC name/id in the front.
@@ -444,6 +447,9 @@ TEST(ParseSourceTargetSubject, CompInvalid) {
     EXPECT_FALSE(sts);
 
     sts = lph.parse_source_target_subject("@abc#123/abc {} 1");
+    EXPECT_FALSE(sts);
+
+    sts = lph.parse_source_target_subject("@UNKNOW/abc {1}:1");
     EXPECT_FALSE(sts);
 }
 
@@ -486,6 +492,13 @@ TEST(ParseSourceTargetSubject, Valid) {
     EXPECT_EQ(pc.name, "");
     EXPECT_EQ(pc.id, 1234);
 
+    stso = lph.parse_source_target_subject("@UNKNOWN");
+    ASSERT_TRUE(stso);
+    EXPECT_TRUE(std::holds_alternative<LogParserTypes::PcSubject>(*stso));
+    pc = std::get<LogParserTypes::PcSubject>(*stso);
+    EXPECT_EQ(pc.name, "UNKNOWN");
+    EXPECT_EQ(pc.id, 0);
+
     stso = lph.parse_source_target_subject("foo {42}:13");
     ASSERT_TRUE(stso);
     EXPECT_TRUE(std::holds_alternative<LogParserTypes::NpcSubject>(*stso));
@@ -500,6 +513,16 @@ TEST(ParseSourceTargetSubject, Valid) {
     auto comp = std::get<LogParserTypes::CompanionSubject>(*stso);
     EXPECT_EQ(comp.pc.name, "elric of melnibone");
     EXPECT_EQ(comp.pc.id, 19);
+    EXPECT_EQ(comp.companion.name_id.name, "moonglum");
+    EXPECT_EQ(comp.companion.name_id.id, 23);
+    EXPECT_EQ(comp.companion.instance, 42);
+
+    stso = lph.parse_source_target_subject("@UNKNOWN/moonglum {23}:42");
+    ASSERT_TRUE(stso);
+    EXPECT_TRUE(std::holds_alternative<LogParserTypes::CompanionSubject>(*stso));
+    comp = std::get<LogParserTypes::CompanionSubject>(*stso);
+    EXPECT_EQ(comp.pc.name, "UNKNOWN");
+    EXPECT_EQ(comp.pc.id, 0);
     EXPECT_EQ(comp.companion.name_id.name, "moonglum");
     EXPECT_EQ(comp.companion.name_id.id, 23);
     EXPECT_EQ(comp.companion.instance, 42);
@@ -639,166 +662,366 @@ TEST(ParseActionField, Valid) {
     EXPECT_EQ(afo->detail.val()->id, 567);
 }
 
-TEST(ParseValueField, ValidLogInfoValue) {
-    auto vfo = lph.parse_value_field("he3001");
-    ASSERT_TRUE(vfo);
+TEST(ParseMitigationEffectField, Test) {
+    auto mef = lph.parse_mitigation_effect("5 baz {123}");
+    ASSERT_TRUE(mef);
+    EXPECT_EQ(mef->value, 5);
+    ASSERT_TRUE(mef->effect);
+    EXPECT_EQ(mef->effect->name, "baz");
+    EXPECT_EQ(mef->effect->id, 123);
+
+    mef = lph.parse_mitigation_effect("baz {123}");
+    ASSERT_TRUE(mef);
+    ASSERT_FALSE(mef->value);
+    ASSERT_TRUE(mef->effect);
+    EXPECT_EQ(mef->effect->name, "baz");
+    EXPECT_EQ(mef->effect->id, 123);
+
+    mef = lph.parse_mitigation_effect("5");
+    ASSERT_TRUE(mef);
+    EXPECT_EQ(mef->value, 5);
+    ASSERT_FALSE(mef->effect);
+
+    mef = lph.parse_mitigation_effect("5 {123}");
+    ASSERT_TRUE(mef);
+    EXPECT_EQ(mef->value, 5);
+    ASSERT_TRUE(mef->effect);
+    EXPECT_EQ(mef->effect->name, "");
+    EXPECT_EQ(mef->effect->id, 123);
 }
 
 TEST(ParseValueField, InvalidLogInfoValue) {
-    auto vfo = lph.parse_value_field("he3000");
+    auto vfo = lph.parse_value_field("abc");
+    ASSERT_FALSE(vfo);
+
+    vfo = lph.parse_value_field("hx3001");
     ASSERT_FALSE(vfo);
 }
 
-TEST(ParseValueField, ValidUnmitigatedValue) {
-    auto vfo = lph.parse_value_field("1");
+TEST(ParseValueField, ValidLogInfoValue) {
+    auto vfo = lph.parse_value_field("he3001");
     ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::UnmitigatedValue>(*vfo));
-    auto umv = std::get<LogParserTypes::UnmitigatedValue>(*vfo);
-    EXPECT_EQ(umv.base_value, 1);
-    EXPECT_FALSE(umv.crit);
-    EXPECT_FALSE(umv.detail);
-    EXPECT_FALSE(umv.effective);
 
-    vfo = lph.parse_value_field("2*");
+    vfo = lph.parse_value_field("he3000");
     ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::UnmitigatedValue>(*vfo));
-    umv = std::get<LogParserTypes::UnmitigatedValue>(*vfo);
-    EXPECT_EQ(umv.base_value, 2);
-    EXPECT_TRUE(umv.crit);
-    EXPECT_FALSE(umv.detail);
-    EXPECT_FALSE(umv.effective);
-
-    vfo = lph.parse_value_field("3 ~1");
-    ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::UnmitigatedValue>(*vfo));
-    umv = std::get<LogParserTypes::UnmitigatedValue>(*vfo);
-    EXPECT_EQ(umv.base_value, 3);
-    EXPECT_FALSE(umv.crit);
-    EXPECT_FALSE(umv.detail);
-    ASSERT_TRUE(umv.effective);
-    EXPECT_EQ(*umv.effective, 1);
-
-    vfo = lph.parse_value_field("4* ~2");
-    ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::UnmitigatedValue>(*vfo));
-    umv = std::get<LogParserTypes::UnmitigatedValue>(*vfo);
-    EXPECT_EQ(umv.base_value, 4);
-    EXPECT_TRUE(umv.crit);
-    EXPECT_FALSE(umv.detail);
-    ASSERT_TRUE(umv.effective);
-    EXPECT_EQ(*umv.effective, 2);
-
-    vfo = lph.parse_value_field("5* ~3 foo {123}");
-    ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::UnmitigatedValue>(*vfo));
-    umv = std::get<LogParserTypes::UnmitigatedValue>(*vfo);
-    EXPECT_EQ(umv.base_value, 5);
-    EXPECT_TRUE(umv.crit);
-    ASSERT_TRUE(umv.detail);
-    EXPECT_EQ(umv.detail->name, "foo");
-    EXPECT_EQ(umv.detail->id, 123);
-    ASSERT_TRUE(umv.effective);
-    EXPECT_EQ(*umv.effective, 3);
-
-    vfo = lph.parse_value_field("5* ~3 foo {123}");
-    ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::UnmitigatedValue>(*vfo));
-    umv = std::get<LogParserTypes::UnmitigatedValue>(*vfo);
-    EXPECT_EQ(umv.base_value, 5);
-    EXPECT_TRUE(umv.crit);
-    ASSERT_TRUE(umv.detail);
-    EXPECT_EQ(umv.detail->name, "foo");
-    EXPECT_EQ(umv.detail->id, 123);
-    ASSERT_TRUE(umv.effective);
-    EXPECT_EQ(*umv.effective, 3);
 }
 
-TEST(ParseValueField, ValidAbsorbedValue) {
-    auto vfo = lph.parse_value_field("6* ~4 bar {123} (2 absorbed {234})");
-    ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::AbsorbedValue>(*vfo));
-    auto av = std::get<LogParserTypes::AbsorbedValue>(*vfo);
-    EXPECT_EQ(av.base_value, 6);
-    EXPECT_TRUE(av.crit);
-    ASSERT_TRUE(av.detail);
-    EXPECT_EQ(av.detail->name, "bar");
-    EXPECT_EQ(av.detail->id, 123);
-    ASSERT_TRUE(av.effective);
-    EXPECT_EQ(av.effective, 4);
-    EXPECT_EQ(av.absorbed, 2);
-    EXPECT_FALSE(av.absorbed_reason);
-    EXPECT_FALSE(av.reflected);
+TEST(ParseValueField, Test) {
+    // b e t r e
+    auto nvf = lph.parse_value_field("10* ~5 foo {123} -bar {234} (5 baz {345})");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    auto rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_TRUE(rv.crit);
+    ASSERT_TRUE(rv.effective);
+    EXPECT_EQ(*rv.effective, 5);
+    ASSERT_TRUE(rv.type);
+    EXPECT_EQ(rv.type->name, "foo");
+    EXPECT_EQ(rv.type->id, 123);
+    ASSERT_TRUE(rv.mitigation_reason);
+    EXPECT_EQ(rv.mitigation_reason->name, "bar");
+    EXPECT_EQ(rv.mitigation_reason->id, 234);
+    ASSERT_TRUE(rv.mitigation_effect);
+    ASSERT_TRUE(rv.mitigation_effect->value);
+    EXPECT_EQ(*rv.mitigation_effect->value, 5);
+    ASSERT_TRUE(rv.mitigation_effect->effect);
+    EXPECT_EQ(rv.mitigation_effect->effect->name, "baz");
+    EXPECT_EQ(rv.mitigation_effect->effect->id, 345);
 
-    vfo = lph.parse_value_field("7 ~5 baz {234} -shield {345} (1 absorbed {456})");
-    ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::AbsorbedValue>(*vfo));
-    av = std::get<LogParserTypes::AbsorbedValue>(*vfo);
-    EXPECT_EQ(av.base_value, 7);
-    EXPECT_FALSE(av.crit);
-    ASSERT_TRUE(av.detail);
-    EXPECT_EQ(av.detail->name, "baz");
-    EXPECT_EQ(av.detail->id, 234);
-    ASSERT_TRUE(av.effective);
-    EXPECT_EQ(av.effective, 5);
-    EXPECT_EQ(av.absorbed, 1);
-    ASSERT_TRUE(av.absorbed_reason);
-    EXPECT_EQ(av.absorbed_reason->name, "shield");
-    EXPECT_FALSE(av.reflected);
+    // b - t r e
+    nvf = lph.parse_value_field("10 foo {123} -bar {234} (5 baz {345})");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_FALSE(rv.crit);
+    ASSERT_FALSE(rv.effective);
+    ASSERT_TRUE(rv.type);
+    EXPECT_EQ(rv.type->name, "foo");
+    EXPECT_EQ(rv.type->id, 123);
+    ASSERT_TRUE(rv.mitigation_reason);
+    EXPECT_EQ(rv.mitigation_reason->name, "bar");
+    EXPECT_EQ(rv.mitigation_reason->id, 234);
+    ASSERT_TRUE(rv.mitigation_effect);
+    ASSERT_TRUE(rv.mitigation_effect->value);
+    EXPECT_EQ(*rv.mitigation_effect->value, 5);
+    ASSERT_TRUE(rv.mitigation_effect->effect);
+    EXPECT_EQ(rv.mitigation_effect->effect->name, "baz");
+    EXPECT_EQ(rv.mitigation_effect->effect->id, 345);
 
-    vfo = lph.parse_value_field("10 elemental {234} -immune {345}");
-    ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::AbsorbedValue>(*vfo));
-    av = std::get<LogParserTypes::AbsorbedValue>(*vfo);
-    EXPECT_EQ(av.base_value, 10);
-    EXPECT_FALSE(av.crit);
-    ASSERT_TRUE(av.detail);
-    EXPECT_EQ(av.detail->name, "elemental");
-    EXPECT_EQ(av.detail->id, 234);
-    ASSERT_FALSE(av.effective);
-    EXPECT_EQ(av.absorbed, 0);
-    ASSERT_TRUE(av.absorbed_reason);
-    EXPECT_EQ(av.absorbed_reason->name, "immune");
-    EXPECT_FALSE(av.reflected);
+    // b e - r e
+    nvf = lph.parse_value_field("10 ~5 -bar {234} (5 baz {345})");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_FALSE(rv.crit);
+    ASSERT_TRUE(rv.effective);
+    EXPECT_EQ(*rv.effective, 5);
+    ASSERT_FALSE(rv.type);
+    ASSERT_TRUE(rv.mitigation_reason);
+    EXPECT_EQ(rv.mitigation_reason->name, "bar");
+    EXPECT_EQ(rv.mitigation_reason->id, 234);
+    ASSERT_TRUE(rv.mitigation_effect);
+    ASSERT_TRUE(rv.mitigation_effect->value);
+    EXPECT_EQ(*rv.mitigation_effect->value, 5);
+    ASSERT_TRUE(rv.mitigation_effect->effect);
+    EXPECT_EQ(rv.mitigation_effect->effect->name, "baz");
+    EXPECT_EQ(rv.mitigation_effect->effect->id, 345);
 
-    vfo = lph.parse_value_field("7* baz {234} (reflected {456})");
-    ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::AbsorbedValue>(*vfo));
-    av = std::get<LogParserTypes::AbsorbedValue>(*vfo);
-    EXPECT_EQ(av.base_value, 7);
-    EXPECT_TRUE(av.crit);
-    ASSERT_TRUE(av.detail);
-    EXPECT_EQ(av.detail->name, "baz");
-    EXPECT_EQ(av.detail->id, 234);
-    ASSERT_FALSE(av.effective);
-    EXPECT_EQ(av.absorbed, 0);
-    ASSERT_FALSE(av.absorbed_reason);
-    EXPECT_TRUE(av.reflected);
-}
+    // b e t - e
+    nvf = lph.parse_value_field("10 ~5 foo {123} (5 baz {345})");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_FALSE(rv.crit);
+    ASSERT_TRUE(rv.effective);
+    EXPECT_EQ(*rv.effective, 5);
+    ASSERT_TRUE(rv.type);
+    EXPECT_EQ(rv.type->name, "foo");
+    EXPECT_EQ(rv.type->id, 123);
+    ASSERT_FALSE(rv.mitigation_reason);
+    ASSERT_TRUE(rv.mitigation_effect);
+    ASSERT_TRUE(rv.mitigation_effect->value);
+    EXPECT_EQ(*rv.mitigation_effect->value, 5);
+    ASSERT_TRUE(rv.mitigation_effect->effect);
+    EXPECT_EQ(rv.mitigation_effect->effect->name, "baz");
+    EXPECT_EQ(rv.mitigation_effect->effect->id, 345);
 
-TEST(ParseValueField, ValidFullyMitigatedValue) {
-    auto vfo = lph.parse_value_field("0");
-    ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::FullyMitigatedValue>(*vfo));
-    auto fmv = std::get<LogParserTypes::FullyMitigatedValue>(*vfo);
-    ASSERT_FALSE(fmv.damage_avoided_reason);
+    // b e t - e
+    nvf = lph.parse_value_field("10* ~5 foo {123} - (5 baz {345})");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_TRUE(rv.crit);
+    ASSERT_TRUE(rv.effective);
+    EXPECT_EQ(*rv.effective, 5);
+    ASSERT_TRUE(rv.type);
+    EXPECT_EQ(rv.type->name, "foo");
+    EXPECT_EQ(rv.type->id, 123);
+    ASSERT_FALSE(rv.mitigation_reason);
+    ASSERT_TRUE(rv.mitigation_effect);
+    ASSERT_TRUE(rv.mitigation_effect->value);
+    EXPECT_EQ(*rv.mitigation_effect->value, 5);
+    ASSERT_TRUE(rv.mitigation_effect->effect);
+    EXPECT_EQ(rv.mitigation_effect->effect->name, "baz");
+    EXPECT_EQ(rv.mitigation_effect->effect->id, 345);
 
-    vfo = lph.parse_value_field("0 -");
-    ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::FullyMitigatedValue>(*vfo));
-    fmv = std::get<LogParserTypes::FullyMitigatedValue>(*vfo);
-    ASSERT_FALSE(fmv.damage_avoided_reason);
+    // b e t r -
+    nvf = lph.parse_value_field("10* ~5 foo {123} -bar {234}");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_TRUE(rv.crit);
+    ASSERT_TRUE(rv.effective);
+    EXPECT_EQ(*rv.effective, 5);
+    ASSERT_TRUE(rv.type);
+    EXPECT_EQ(rv.type->name, "foo");
+    EXPECT_EQ(rv.type->id, 123);
+    ASSERT_TRUE(rv.mitigation_reason);
+    EXPECT_EQ(rv.mitigation_reason->name, "bar");
+    EXPECT_EQ(rv.mitigation_reason->id, 234);
+    ASSERT_FALSE(rv.mitigation_effect);
 
-    vfo = lph.parse_value_field("0 -deflect {123}");
-    ASSERT_TRUE(vfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::FullyMitigatedValue>(*vfo));
-    fmv = std::get<LogParserTypes::FullyMitigatedValue>(*vfo);
-    ASSERT_TRUE(fmv.damage_avoided_reason);
-    EXPECT_EQ(fmv.damage_avoided_reason->name, "deflect");
-    EXPECT_EQ(fmv.damage_avoided_reason->id, 123);
-}
+    // b - - r e
+    nvf = lph.parse_value_field("10 -bar {234} (5 baz {345})");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_FALSE(rv.crit);
+    ASSERT_FALSE(rv.effective);
+    ASSERT_FALSE(rv.type);
+    ASSERT_TRUE(rv.mitigation_reason);
+    EXPECT_EQ(rv.mitigation_reason->name, "bar");
+    EXPECT_EQ(rv.mitigation_reason->id, 234);
+    ASSERT_TRUE(rv.mitigation_effect);
+    ASSERT_TRUE(rv.mitigation_effect->value);
+    EXPECT_EQ(*rv.mitigation_effect->value, 5);
+    ASSERT_TRUE(rv.mitigation_effect->effect);
+    EXPECT_EQ(rv.mitigation_effect->effect->name, "baz");
+    EXPECT_EQ(rv.mitigation_effect->effect->id, 345);
 
-TEST(ParseValueField, ValidPartiallyMitigatedValue) {
-    auto vfo = lph.parse_value_field("1 2 ");
+    // b - t - e
+    nvf = lph.parse_value_field("10* foo {123} (5 baz {345})");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_TRUE(rv.crit);
+    ASSERT_FALSE(rv.effective);
+    ASSERT_TRUE(rv.type);
+    EXPECT_EQ(rv.type->name, "foo");
+    EXPECT_EQ(rv.type->id, 123);
+    ASSERT_FALSE(rv.mitigation_reason);
+    ASSERT_TRUE(rv.mitigation_effect);
+    ASSERT_TRUE(rv.mitigation_effect->value);
+    EXPECT_EQ(*rv.mitigation_effect->value, 5);
+    ASSERT_TRUE(rv.mitigation_effect->effect);
+    EXPECT_EQ(rv.mitigation_effect->effect->name, "baz");
+    EXPECT_EQ(rv.mitigation_effect->effect->id, 345);
+
+    // b - t r -
+    nvf = lph.parse_value_field("10* foo {123} -bar {234}");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_TRUE(rv.crit);
+    ASSERT_FALSE(rv.effective);
+    ASSERT_TRUE(rv.type);
+    EXPECT_EQ(rv.type->name, "foo");
+    EXPECT_EQ(rv.type->id, 123);
+    ASSERT_TRUE(rv.mitigation_reason);
+    EXPECT_EQ(rv.mitigation_reason->name, "bar");
+    EXPECT_EQ(rv.mitigation_reason->id, 234);
+    ASSERT_FALSE(rv.mitigation_effect);
+
+    // b e - - e
+    nvf = lph.parse_value_field("10* ~5 (5 baz {345})");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_TRUE(rv.crit);
+    ASSERT_TRUE(rv.effective);
+    EXPECT_EQ(*rv.effective, 5);
+    ASSERT_FALSE(rv.type);
+    ASSERT_FALSE(rv.mitigation_reason);
+    ASSERT_TRUE(rv.mitigation_effect);
+    ASSERT_TRUE(rv.mitigation_effect->value);
+    EXPECT_EQ(*rv.mitigation_effect->value, 5);
+    ASSERT_TRUE(rv.mitigation_effect->effect);
+    EXPECT_EQ(rv.mitigation_effect->effect->name, "baz");
+    EXPECT_EQ(rv.mitigation_effect->effect->id, 345);
+
+    // b e - r -
+    nvf = lph.parse_value_field("10* ~5 -bar {234} ");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_TRUE(rv.crit);
+    ASSERT_TRUE(rv.effective);
+    EXPECT_EQ(*rv.effective, 5);
+    ASSERT_FALSE(rv.type);
+    ASSERT_TRUE(rv.mitigation_reason);
+    EXPECT_EQ(rv.mitigation_reason->name, "bar");
+    EXPECT_EQ(rv.mitigation_reason->id, 234);
+    ASSERT_FALSE(rv.mitigation_effect);
+
+    // b e t - -
+    nvf = lph.parse_value_field("10* ~5 foo {123}");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_TRUE(rv.crit);
+    ASSERT_TRUE(rv.effective);
+    EXPECT_EQ(*rv.effective, 5);
+    ASSERT_TRUE(rv.type);
+    EXPECT_EQ(rv.type->name, "foo");
+    EXPECT_EQ(rv.type->id, 123);
+    ASSERT_FALSE(rv.mitigation_reason);
+    ASSERT_FALSE(rv.mitigation_effect);
+
+    // b - - - e
+    nvf = lph.parse_value_field("10* (5 baz {345})");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_TRUE(rv.crit);
+    ASSERT_FALSE(rv.effective);
+    ASSERT_FALSE(rv.type);
+    ASSERT_FALSE(rv.mitigation_reason);
+    ASSERT_TRUE(rv.mitigation_effect);
+    ASSERT_TRUE(rv.mitigation_effect->value);
+    EXPECT_EQ(*rv.mitigation_effect->value, 5);
+    ASSERT_TRUE(rv.mitigation_effect->effect);
+    EXPECT_EQ(rv.mitigation_effect->effect->name, "baz");
+    EXPECT_EQ(rv.mitigation_effect->effect->id, 345);
+
+    // b - - r -
+    nvf = lph.parse_value_field("10 -bar {234}");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_FALSE(rv.crit);
+    ASSERT_FALSE(rv.effective);
+    ASSERT_FALSE(rv.type);
+    ASSERT_TRUE(rv.mitigation_reason);
+    EXPECT_EQ(rv.mitigation_reason->name, "bar");
+    EXPECT_EQ(rv.mitigation_reason->id, 234);
+    ASSERT_FALSE(rv.mitigation_effect);
+
+    // b - t - -
+    nvf = lph.parse_value_field("10* foo {123}");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_TRUE(rv.crit);
+    ASSERT_FALSE(rv.effective);
+    ASSERT_TRUE(rv.type);
+    EXPECT_EQ(rv.type->name, "foo");
+    EXPECT_EQ(rv.type->id, 123);
+    ASSERT_FALSE(rv.mitigation_reason);
+    ASSERT_FALSE(rv.mitigation_effect);
+
+    // b e - - -
+    nvf = lph.parse_value_field("10* ~5");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_TRUE(rv.crit);
+    ASSERT_TRUE(rv.effective);
+    EXPECT_EQ(*rv.effective, 5);
+    ASSERT_FALSE(rv.type);
+    ASSERT_FALSE(rv.mitigation_reason);
+    ASSERT_FALSE(rv.mitigation_effect);
+
+    // b - - - -
+    nvf = lph.parse_value_field("10*");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_TRUE(rv.crit);
+    ASSERT_FALSE(rv.effective);
+    ASSERT_FALSE(rv.type);
+    ASSERT_FALSE(rv.mitigation_reason);
+    ASSERT_FALSE(rv.mitigation_effect);
+
+    // b - - - -
+    nvf = lph.parse_value_field("10.0");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 10);
+    EXPECT_FALSE(rv.crit);
+    ASSERT_FALSE(rv.effective);
+    ASSERT_FALSE(rv.type);
+    ASSERT_FALSE(rv.mitigation_reason);
+    ASSERT_FALSE(rv.mitigation_effect);
+
+    // b - - - -
+    nvf = lph.parse_value_field("0.0");
+    ASSERT_TRUE(nvf);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::RealValue>(*nvf));
+    rv = std::get<LogParserTypes::RealValue>(*nvf);
+    EXPECT_EQ(rv.base_value, 0 );
+    EXPECT_FALSE(rv.crit);
+    ASSERT_FALSE(rv.effective);
+    ASSERT_FALSE(rv.type);
+    ASSERT_FALSE(rv.mitigation_reason);
+    ASSERT_FALSE(rv.mitigation_effect);
 }
 
 TEST(ParseThreatField, ValidThreat) {

@@ -165,24 +165,22 @@ auto main(int argc, char** argv) -> int {
                 auto& value = *log_entry->value;
                 if (std::holds_alternative<LogParserTypes::LogInfoValue>(value)) {
                     BLT_LINE(error, line_num) << "Value: info=" << std::get<LogParserTypes::LogInfoValue>(value).info;
-                } else if (std::holds_alternative<LogParserTypes::UnmitigatedValue>(value)) {
-                    auto& uv = std::get<LogParserTypes::UnmitigatedValue>(value);
-                    BLT_LINE(error, line_num) << "Unmitigated value: value=" << uv.base_value
-                                              << ", crit=" << uv.crit << ", detail="
-                                              << (uv.detail ? uv.detail->name : "")
-                                              << ", effective=" << (uv.effective ? *uv.effective : 0);
-                } else if (std::holds_alternative<LogParserTypes::AbsorbedValue>(value)) {
-                    auto& av = std::get<LogParserTypes::AbsorbedValue>(value);
-                    auto eff = av.effective.value_or(0UL);
-                    BLT_LINE(error, line_num) << "Absorbed value: value" << av.base_value
-                                              << ", crit=" << av.crit << ", effective=" << eff
-                                              << ", detail=" << (av.detail ? av.detail->name : "")
-                                              << ", absorbed=" << av.absorbed
-                                              << ", reason=" << (av.absorbed_reason ? av.absorbed_reason->name : "");
-                } else {
-                    auto& fmv = std::get<LogParserTypes::FullyMitigatedValue>(value);
-                    BLT_LINE(error, line_num) << "Fully mitigated Value: reason="
-                                              << (fmv.damage_avoided_reason ? fmv.damage_avoided_reason->name : "none");
+                } else if (std::holds_alternative<LogParserTypes::RealValue>(value)) {
+                    auto& rv = std::get<LogParserTypes::RealValue>(value);
+                    bool has_type = rv.type.has_value();
+                    std::string type = has_type ? rv.type->name : "n/p";
+                    bool has_eff = rv.effective.has_value();
+                    std::string eff = has_eff ? std::to_string(*rv.effective) : "n/p";
+                    bool has_mit_reas = rv.mitigation_reason.has_value();
+                    std::string mit_reas = has_mit_reas ? rv.mitigation_reason->name : "n/p";
+                    bool has_mit_eff = rv.mitigation_effect.has_value();
+                    bool has_mit_eff_val = has_mit_eff && rv.mitigation_effect->value.has_value();
+                    std::string mit_eff_val = has_mit_eff_val ? std::to_string(*rv.mitigation_effect->value) : "n/p";
+                    bool has_mit_eff_eff = has_mit_eff && rv.mitigation_effect->effect.has_value();
+                    std::string mit_eff_eff = has_mit_eff_eff ? rv.mitigation_effect->effect->name : "n/p";
+                    BLT_LINE(error, line_num) << "Real value: base=" << rv.base_value << ", crit=" << rv.crit
+                                              << ", eff=" << eff << ", type=" << type << ", mit_reas=" << mit_reas
+                                              << ", mit_eff_val=" << mit_eff_val << "mit_eff_eff=" << mit_eff_eff;
                 }
             }
 

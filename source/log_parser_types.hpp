@@ -59,30 +59,19 @@ namespace LogParserTypes {
     struct LogInfoValue {
 	std::string info;
     };
-    // Note it seems a bit odd to me that an "unmitigated value" should an effective value, which implies some sort of
-    // mitigation. However, for this case there's no mention of why base != effective in the log entry.
-    struct UnmitigatedValue {
-	uint64_t base_value;
-	bool crit = false;
-	std::optional<NameId> detail;
-	std::optional<uint64_t> effective;
+    struct MitigationEffect {
+        std::optional<uint64_t> value;
+        std::optional<NameId> effect;
     };
-    // absorbed and deflected have (almost) the exact same structure. Probably need to change this to "MitigatedValue"
-    // and store the mitigation type. Thank goodness increasing the level of abstraction solves all problems.  First
-    // step: add "reflected" boolean
-    struct AbsorbedValue {
-	uint64_t base_value;
-	bool crit = false;
+    struct RealValue {
+        uint64_t base_value {0};
+        bool crit {false};
         std::optional<uint64_t> effective;
-	uint64_t absorbed;
-	std::optional<NameId> detail;
-	std::optional<NameId> absorbed_reason;
-        bool reflected = false;
+        std::optional<NameId> type;
+        std::optional<NameId> mitigation_reason;
+        std::optional<MitigationEffect> mitigation_effect;
     };
-    struct FullyMitigatedValue {
-        std::optional<NameId> damage_avoided_reason;
-    };
-    using Value = std::variant<LogInfoValue, UnmitigatedValue, AbsorbedValue, FullyMitigatedValue>;
+    using Value = std::variant<LogInfoValue, RealValue>;
     using Threat = std::variant<double, std::string_view>;
     struct ParsedLogLine {
 	Timestamps::timestamp ts;
