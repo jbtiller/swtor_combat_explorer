@@ -1,0 +1,1149 @@
+-*- fil-column: 120; indent-tabs-mode: nil -*-
+
+2025-10-28
+
+Added logic to specify how to handle populating logfiles that have already been parsed and pushed into the
+database. That's kind of nice.
+
+Added profiling via gprof to my code in the CMakeLists.txt like so:
+
+target_compile_options(
+  swtor_combat_populate_db_exe
+  PRIVATE -pg
+)
+
+target_link_options(
+  swtor_combat_populate_db_exe
+  PRIVATE -pg
+)
+
+Now I'm running the populator (which also exercises the parser) against some logfiles. No idea what this will look
+like. This will produce gmon.out.
+
+We get an analysis via
+
+gprof swtor_combate_populate_db_exe gmon.out > analysis.txt
+
+Note that I tried gprofng, but it doesn't actually hack up the executable and just samples (somehow) the state of the
+execution and uses that to infer timing, but that didn't seem very useful at all to me. Nice that it didn't require
+recompilation and a big slow-down, but not much actual data.
+
+To think about:
+
+1) Start pushing up to GitHub.
+2) Make a container for the build environment.
+3) Add CI/CD via github actions.
+4) Start using github for doing PRs, etc.
+5) Analyze gprof results
+6) Performance optimizations, if necessary.
+
+OK, run finally finished. Around 330k log lines parsed and populated.
+
+Highest cost of my calls:
+
+DbPopulator::populate_from_entry - makes sense, this wraps all other populateion calls
+DbPopulator::add_name_id - as I expected, this is the most expensive because it's called so often
+    in fact, it's called 1,309,195 times for 330k entries. Wow, that's a lot. Easy to optimize via cache.
+DbPopulator::add_action - not surprising, called on every single event. Easy enough to cache this, too.
+
+Learned how to visualize using gprof2dot. Via:
+
+gprof build/dev/swtor_combat_populate_db gmon.out | gprof2dot --strip | dot -Tpng -o gprof.png
+
+Very handy. '--strip' gets rid of all the cruft (function params, template shit, etc.). Very nice. Basically told me the
+same thing but the callgraph is nice.
+
+Also a recommendation to use 'callgrind' from valgrind instead of gprof. Not sure how callgrind works. Maybe look that
+up.
+
+But, the result I see from here is that adding the Name and Action cache would be handy.
+
+Bedtime.
+
+2025-10-27
+
+Turns out you can have two ExitCombats in a row!
+
+File: combat_2025-03-22_17_47_15_992759.txt
+
+93027 and 93062
+
+No intervening EnterCombat. Weird.
+
+There's only 500ms or so between these lines.
+
+It looks like it ends when I die and then it ends again when the final boss dies. Hmm.
+
+Populator can't handle that and crashed. What should we do in that situation?
+
+...43.720: ExitCombat
+...43.805: Boss dies
+...44.215: ExitCombat
+
+Nobody died in-between or immediately. I dunno what happened. I'll log an error and ignore it.
+
+Going to try Google's "gflags" library for command line parsing. Who knows?
+
+Can't get it to build via FetchContent. Getting this error:
+
+CMake Error (dev) at build/dev/_deps/gflags-src/CMakeLists.txt:430 (gflags_define):
+  uninitialized variable 'LIB_SUFFIX'
+
+Tried running ccmake in the gflags dir and 'c' for configure and then try to generate via cmake - no joy.
+
+Had to set LIB_SUFFIX in gflag's CMakeLists.txt. Also had to update the required min version to 3.5 due to
+deprecation. Sheeh. Ugh, also had to fix a floating comparison in a test I don't care about in gflags. Ugh.
+
+
+
+2025-10-25
+
+Fuck, the logfile is in CP-1252 (WINDOWS-1252) encoding and the database uses UTF-8 by default. Fuck fuck.
+
+Use SET client_encoding = WIN1252; after creating database. Oops, didn't work. Still same error.
+
+Want entire DB to be WIN1252.
+
+FUCK ME.
+
+create database swtor_combat_explorer with encoding 'WIN1252' LC_COLLATE='en_US.WIN1252' LC_CTYPE='en_US.WIN1252' TEMPLATE=template0;
+
+Didn't work.
+
+create database swtor_combat_explorer with encoding 'WIN1252' LC_COLLATE='C' LC_CTYPE='C' TEMPLATE=template0;
+
+This seemed to have worked.
+
+2025-10-13
+
+Things are apace. Almost done with the db parser. I was able to create ParsedLogLine and have it populate an Event and
+all of the vairous sub-tables. Yay.
+
+I think I should rename the advanced_class table to be more up with the current nomenclature.
+
+Interestingly, the game and the documentation is schizophrenic. The website talks about the old "class" and "advanced
+class" terms, but the game itself talks about "Combat Style" and "Discipline." And the log talks about "Discipline
+Changed" and doesn't use "class/advanced class" anywhere. Joy.
+
+I think the table should be "Class" and the attributes should be "style" and "discipline." Makes it easier to get a
+handle on it, IMHO.
+
+I also created a new table that holds an ability name and a reference to a class. The ability is intended to be a unique
+ability only available to the associated class. This will allow the DB to store a PC's class even if we never see a
+DisciplineChanged event, which is common in some situations, like PvP or world activities, where not everybody's grouped
+up.
+
+In addition, I want to prepopulate the Class (was Advanced_Class) table with the current style/disciplines for PCs. No
+reason to populate this table from the log. Just gotta do it.
+
+Oh, I just removed clang-tidy entirely from the build. It was so slow and I get tidy from the lsp, so not a big
+deal. IT'S SO MUCH FASTER NOW.
+
+I'm gonna try parsing an entire log soon!! Yikes!! Then I gotta work on some searches to find interesting things... heh
+heh heh.
+
+Should I add a Logfile attribute to the Event table? That way you can always relate a log entry to the logfile it came
+from and vice-versa. Yeah, I think it's a good idea. I have the logfile attribute in the Combat table, but there are a
+lot of log entries that fall outside of combat, and those currently can't be related to a specific logfile.
+
+But... does that matter? I'm not sure it does. The only reason we care about logfile even now is that we can keep track
+of its parsing status via the "fully_parsed" attribute. Theoretically, once a logfile is fully parsed we can just ignore
+a request to parse it again and save a ton of time.
+
+In the end, I don't think it's worth doing anything to Event. Let's leave it the way it is. Who knows if this will even
+be relevant in the end.
+
+The db populator executable needs a lot of work. I haven't touched it in over a month since I moved the population code
+into its own library.
+
+2025-10-01
+
+OMG, I think I just got rid of clang-tidy for all time. Well, I didn't see it running in a build.  So much faster. Let's
+try changing just one file.
+
+One problem of using the language server, of course, is that it runs clang-tidy, too.
+
+No, I still see tidy being run. AARGH. Where? Why? ::sigh::
+
+Wait. How could I possibly reparse the same log? How I would I know lines had been parsed and populated and which
+hadn't? I'd have to search every line for the same timestamp and some other unique combination of attributes to see if
+it existed. If this doesn't work right, I'd end up repopulating the entire file again, essentially blowing up the Event
+table with duplicated garbage. Ugh.
+
+OK, that's a problem for another time. But it will need to be solved. Easiest way seems to be by adding a logfile
+attribute to Event. Then when a reparse was requested, we'd just blow everything, all events and combats and combat
+actors related to that logfile and then reparse from scratch. I like that.
+
+Dammit, so many things to do. :/
+
+2025-09-27
+
+OK, spend some time to avoid running clang-tidy all over again.
+
+
+
+2025-09-26
+
+One possibility - We could flatten the text event into a single csv row with empty fields. Make it super easy to
+parse. Like an intermediate representation. Another output like the database. Advantage: easier to read. Disadvantage -
+more code to maintain. Advantage - other programs could work with this text more easily than interacting with the
+database, which requires Postgres, blah blh blah. Disadvantage: reading csv might be slower and client would still have
+to keep track of actors. But not a huge deal.
+
+Wouldn't depend on a library, either, could do all csv parsing by hand since no string in the log can ever contain a
+comma. Hmm.
+
+2025-09-22
+
+Car problems worked out, yay. A lot (lot lot) of time on add PC Actor function and its tests. I feel like I'm
+overthinking this and that's why it's so complicated. Every log seems to start with
+
+AreaEntered
+DisciplineChanged
+
+So, it's only for the first line that I won't know the class. You can't change class during combat so all I really need
+to handle is remembering the actor row id of the last time I saw the pc. When combat starts I could even just search for
+the most recent actor row that has the PC's name. Easy enough.
+
+I'm seriously making this more complicated than it needs to be. :/ I'm pretty sure that all I need to remember is the
+most recent actor row ID of the actor's name. But... maybe not. It looks like the logs DO have instances where the first
+thing I see of a PC is NOT their class. :/ Rats!!
+
+So I think I'll keep it simpl and use m_pcs and just update it when a new row is created in Actor.
+
+2025-09-13
+
+Stupid car problems, choir party - yesterday was fun, actually. No programming though. Today I'm back at it. Finished
+add_pc_class and writing the test. Getting a weird error:
+
+unknown file: Failure
+C++ exception with description "ERROR:  input of anonymous composite types is not implemented
+CONTEXT:  unnamed portal parameter $2 = '...'
+" thrown in the test body.
+
+After finding it and wrapping with a catch and rethrowing, I see this:
+
+OOPS1
+ERROR:  input of anonymous composite types is not implemented
+CONTEXT:  unnamed portal parameter $2 = '...'
+
+SELECT id FROM Advanced_class WHERE (style, advanced_class) = ($1, $2)
+unknown file: Failure
+C++ exception with description "ERROR:  input of anonymous composite types is not implemented
+CONTEXT:  unnamed portal parameter $2 = '...'
+" thrown in the test body.
+
+2025-09-10
+
+Making good progress, but slowed by my stupid car problems. :/
+
+2025-09-06
+
+OK, finally getting on a roll. I think I have a better handle on pqxx and PostgreSql.
+
+NOTE: Don't try to insert a value into a SERIAL field. I don't think the database knows to update the "get next value"
+so eventually i think we get a clash.
+
+I'm actually finding bugs with these tests, yay yay yay.
+
+
+
+2025-09-04
+
+Yeah, lots of time has gone by. Getting more familiar with pqxx, lots of of learning and failing. :/
+
+IMPORTANT: In SELECT statements, DON'T surround the result column list in '()'! This causes pqxx to NOT PARSE THE
+RESULT. So, you just get a single column back and it's only useful as null-terminated string. Ugh, that cost me days of
+pain.
+
+Turns out more info here: https://stackoverflow.com/questions/55320143/do-you-need-surrounding-parantheses-in-postgres-select-statement
+
+So, if you put the parens in there, you're indicating you want a composite value value in a single column. The parens
+form a "row constructor or "composite value." I was getting back a row with one column of a "row" type. I had no idea
+had to deal with that.
+
+After futzing around
+
+2025-08-23
+
+pqxx::work is just an alias for pqxx::transaction<>. Too bad that's not documented anywhere.
+
+2025-08-17
+
+Brahms was awesome.
+
+Time to add pg to the CMake file and create a new executable to interact with pg and the parser library.
+
+Tryuing to use libpqxx, a C++ API that sits on top of libpq, the standard C-client interface. Not working,
+however. Installed libpqxx-dev and libpq-dev and then modified CMake per suggestion.
+
+However, doesn't work because because libpqxx looks for std::source_location for some reason but c++20 doesn't have it -
+my code is c++20. So, gonna switch over to fetchcontent.
+
+OK, got it going. Looking good. Runs and I can connect to the DB. Let's see if I can query the version table, which
+should have a row.
+
+Got it! It works! Yay.
+
+
+
+2025-08-16
+
+Brahms day! But a few database things as well. Probably should use the
+environment variables for connecting/authenticating to the database.
+
+PGDATABASE=swtor_combat_explorer
+PGUSER=jason
+PGPASSWORD=jason
+
+Gotta get ready.
+
+2025-08-15
+
+After doing some futzing, I was able to populate the database with my
+tables. Now I should try writing some code that uses the parser and
+populates the tables themselves.
+
+Fun!
+
+Seems like I need another program, a 'populator' that uses the parser.
+
+OK, cool.
+
+Wait, I think I should put a version number into the database. That
+way I can (theoretically) allow the client code to require a version
+and to warn users if the database is old. I could also (theoretically)
+embed information on how to migrate between versions?
+
+2025-08-14
+
+OK, so how do I do this?
+
+Trying to 'createdb' (per Postgres documentation), but getting an
+error:
+
+$ createdb: error: database creation failed: ERROR:  permission denied to create database
+
+The tutorial indicates that I need to log into the account that's
+associated with the postgres server. Can't seem to do that. I found a
+user named 'postgres', but I don't know the password!
+
+$ su postgres
+Password: 
+su: Authentication failure
+
+Tried my favorite and some other obvious ones, like:
+
+admin
+administrator
+postgres
+postgresql
+jason
+
+I think I installed it as part of the SQL class, but I can't remember
+much about that. Let's go look.
+
+Huh, the notes from the postgres class look like this:
+
+$ sudo apt-get install postgresql postgresql-contrib
+
+Start the service running:
+
+$ sudo systemctl start postgresql.service
+
+Become the postgres user to avoid having to authenticate with the
+database as the superuser:
+
+$ sudo -i -u postgres
+
+Access the command-line client:
+
+$ psql
+
+Now I can make my user and database:
+
+CREATE USER jason WITH PASSWORD 'jason';
+CREATE DATABASE people WITH OWNER 'jason';
+
+Now get out of sudo and connect directly:
+
+$ psql people jason
+psql (16.3 (Ubuntu 16.3-0ubuntu0.24.04.1))
+Type "help" for help.
+
+people=>
+
+OK, that all seems reasonable. However, I'm guessing in order to use
+createdb I'll have to specify my user name somehow. Let's see.
+
+Yeah, createdb can specify the username:
+
+-U, --username  user name to connect as
+-W, --password  force password prompt
+
+$ createdb -WU jason
+Password: (entered jason)
+createdb: error: database creation failed: ERROR:  permission denied to create database
+
+So, still no joy. Let's try the suggestion from the class:
+
+$ sudo -i -u postgres
+[sudo] password for jason: 
+postgres@jason-ThinkPad-T580:~$ 
+
+OK, so now I'm the postgres user.
+
+postgres@jason-ThinkPad-T580:~$ psql
+psql (16.9 (Ubuntu 16.9-0ubuntu0.24.04.1))
+Type "help" for help.
+
+postgres=# SELECT * from USER;
+   user   
+----------
+ postgres
+(1 row)
+
+There's no 'jason' user like I expected? I wonder if I didn't actually
+do that.
+
+postgres=# CREATE USER jason WITH PASSWORD 'jason';
+ERROR:  role "jason" already exists
+
+Huh. So, it's a role and not in the USER table?
+
+Ah, there's a super-secret command that I found via:
+
+postgres=# \?
+
+\dg shows the roles
+
+                             List of roles
+ Role name |                         Attributes                         
+-----------+------------------------------------------------------------
+ jason     | 
+ postgres  | Superuser, Create role, Create DB, Replication, Bypass RLS
+
+Huh. Notice that 'jason' doesn't have any attributes, so it literally
+can't create databases. Ah-ha!
+
+Per the web:
+
+postgres=# ALTER ROLE jason WITH CREATEDB;
+ALTER ROLE
+postgres=# \dg
+                             List of roles
+ Role name |                         Attributes                         
+-----------+------------------------------------------------------------
+ jason     | Create DB
+ postgres  | Superuser, Create role, Create DB, Replication, Bypass RLS
+
+ Excellent. Trying via createdb again.
+
+$ createdb -WU jason
+Password:
+$
+
+No erros this time. Excellent.
+
+$ createdb -WU jason swtor_combat_explorer
+Password:
+$
+
+Ooh.
+
+$ pg_dump -WU jason
+Password: 
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)
+-- Dumped by pg_dump version 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- PostgreSQL database dump complete
+--
+
+$
+
+There is a 'jason' database.
+
+$ pg_dump -WU jason swtor_combat_explorer
+Password: 
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)
+-- Dumped by pg_dump version 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- PostgreSQL database dump complete
+--
+
+$
+
+There's also a 'swtor_combat_explorer' database.
+
+Let's try creating our tables one-by-one.
+
+$ psql
+psql (16.9 (Ubuntu 16.9-0ubuntu0.24.04.1))
+Type "help" for help.
+
+jason=> 
+
+Looks good. Now, how do I set the current database?
+
+jason=> \c swtor_combat_explorer
+You are now connected to database "swtor_combat_explorer" as user "jason".
+swtor_combat_explorer=> 
+
+OK, sweet. Notice that "database" and "schema" seemed to be used
+interchangably. Now let's create our first table!
+
+swtor_combat_explorer=> CREATE TABLE Name (
+  id BIGINT NOT NULL,
+  name VARCHAR (128),
+  PRIMARY KEY (id)
+)
+swtor_combat_explorer->
+
+Seemed to work. Actually, I hadn't finished the command yet! See the
+prompt went from => to -> (equals to dash). This means that I haven't
+completed the command. Let's try again.
+
+swtor_combat_explorer=> CREATE TABLE Name (
+  id BIGINT NOT NULL,
+  name VARCHAR (128),
+  PRIMARY KEY (id)
+);
+CREATE TABLE
+swtor_combat_explorer=>
+
+Better.
+
+swtor_combat_explorer=> \dt
+       List of relations
+ Schema | Name | Type  | Owner 
+--------+------+-------+-------
+ public | name | table | jason
+(1 row)
+
+swtor_combat_explorer=> 
+
+OK, I like it. How do I show the schema of a table?
+
+Note that Postgres doesn't seem to preserve capitalization - the
+relation is "name" not "Name" like I entered. Hmm.
+
+swtor_combat_explorer=> \d name
+                       Table "public.name"
+ Column |          Type          | Collation | Nullable | Default 
+--------+------------------------+-----------+----------+---------
+ id     | bigint                 |           | not null | 
+ name   | character varying(128) |           |          | 
+Indexes:
+    "name_pkey" PRIMARY KEY, btree (id)
+
+swtor_combat_explorer=> 
+
+So, this just relates a numeric ID to a string. ez-pz.
+
+Next table.
+
+swtor_combat_explorer=> CREATE TABLE Combat_Style (
+  id SERIAL,
+  name BIGINT NOT NULL,
+  PRIMARY KEY (id),
+  FOREIGN KEY (name) REFERENCES Name(id)
+);
+CREATE TABLE
+swtor_combat_explorer=>
+
+And how does it look?
+
+swtor_combat_explorer=> \d combat_style
+                            Table "public.combat_style"
+ Column |  Type   | Collation | Nullable |                 Default                  
+--------+---------+-----------+----------+------------------------------------------
+ id     | integer |           | not null | nextval('combat_style_id_seq'::regclass)
+ name   | bigint  |           | not null | 
+Indexes:
+    "combat_style_pkey" PRIMARY KEY, btree (id)
+Foreign-key constraints:
+    "combat_style_name_fkey" FOREIGN KEY (name) REFERENCES name(id)
+
+swtor_combat_explorer=>
+
+Nice. The 'nextval' stuff is the internal junk that implements a
+monotonically-increasing sequence suitable for an identifier (SERIAL).
+
+
+
+2025-08-13
+
+OK, I think the parsing task is pretty much done. I can go through
+hundreds of logs with gigabytes of data and not encounter a single
+parsing failure. Of course, I've also given up on some of the
+higher-level semantic extraction I was trying to embed. No matter,
+probably better left to client code anyway.
+
+Now I want to think about how to store this data in a database. Need
+to think about tables and fields now. Joy. SQL. Suck.
+
+Obvious tables:
+
+CREATE TABLE Version (
+  id INT UNIQUE NOT NULL,
+  creation TIMESTAMP NOT NULL
+);
+
+-- All of the names we've seen so far
+--
+-- This is an optimization to avoid storing strings in multiple tables.
+-- The 'id' field is directly from the input log entry and is guaranteed
+-- unique but is essentially a GUID.
+CREATE TABLE Name (
+  id BIGINT NOT NULL,
+  name VARCHAR (128),
+  PRIMARY KEY (id)
+);
+
+-- Because the Name primary key is a BIGINT, all FKs to it must also
+-- be FKs.
+
+-- These little tables that are really just FKs into Name are giving
+-- semantic meaning to the Name. We could also add an enumeration column
+-- to Name indicating the context for Name. I'm not sure if that's a
+-- better idea. But, the enumeration does mean I'd have to update the
+-- enumeration each time I wanted to add a new category of meaning,
+-- whereas this just requires adding a table. Hmm.
+CREATE TABLE Combat_Style (
+  name BIGINT NOT NULL,
+  PRIMARY KEY (name),
+  FOREIGN KEY (name) REFERENCES Name(id)
+);
+
+CREATE TABLE Advanced_Class (
+  id SERIAL,
+  name BIGINT NOT NULL,
+  style INT NOT NULL,
+  PRIMARY KEY (id),
+  FOREIGN KEY (name) REFERENCES Name(id),
+  FOREIGN KEY (style) REFERENCES Combat_Style(name)
+);
+
+CREATE TABLE Actor (
+  id SERIAL,
+  name BIGINT NOT NULL,
+  PRIMARY KEY (id),
+  FOREIGN KEY (name) REFERENCES Name(id)
+);
+
+-- Because PC's can change their class, we need another identifier to
+-- refer to the specific style/class used in a combat.
+
+-- NOTE: Initially I thought I could use the inherited 'id' column from
+-- Actor to be the primary key, but I had to list the 'id' directly in
+-- 'PC' to allow me to refer to it from Companion. Postgres says this:
+--
+-- NOTICE:  merging column "id" with inherited definition
+CREATE TABLE PC (
+  id SERIAL,
+  class INT NOT NULL,
+  PRIMARY KEY (id),
+  FOREIGN KEY (class) REFERENCES Advanced_Class(id)
+) INHERITS (Actor);
+
+CREATE TABLE Companion (
+  id SERIAL,
+  pc INT NOT NULL,
+  PRIMARY KEY (id),
+  FOREIGN KEY (pc) REFERENCES PC(id)
+) INHERITS (Actor);
+
+CREATE TABLE NPC (
+  id SERIAL,
+  PRIMARY KEY (id)
+) INHERITS (Actor);
+
+CREATE TABLE Area (
+--  id SERIAL,
+  area INT NOT NULL,
+  PRIMARY KEY (area),
+  FOREIGN KEY (area) REFERENCES Name(id)
+);
+
+CREATE TABLE Log_File (
+  id SERIAL,
+  filename VARCHAR(512),
+  ts BIGINT NOT NULL, -- timestamp, ms past the epoch
+  fully_parsed BOOL NOT NULL DEFAULT FALSE,
+  PRIMARY KEY (id)
+);
+
+CREATE TABLE Combat (
+  id SERIAL,
+  -- timestamps (ts_*) are stored as ms past the epoch
+  ts_begin BIGINT NOT NULL,
+  ts_end BIGINT NOT NULL,
+  area INT NOT NULL,
+  logfile INT NOT NULL,
+  PRIMARY KEY (id),
+  FOREIGN KEY (area) REFERENCES Area(area),
+  FOREIGN KEY (logfile) REFERENCES Log_File(id)
+);
+
+CREATE TABLE Combat_Actor (
+  combat INT NOT NULL,
+  actor INT NOT NULL,
+  PRIMARY KEY (combat, actor),
+  FOREIGN KEY (combat) REFERENCES Combat(id),
+  FOREIGN KEY (actor) REFERENCES Actor(id)
+);
+
+CREATE TYPE Location AS (
+  x FLOAT,
+  y FLOAT,
+  z FLOAT,
+  rot FLOAT
+);
+
+CREATE TYPE Health AS (
+  current INT,
+  maximum INT
+);
+
+CREATE TABLE Event (
+  id SERIAL,
+  ts BIGINT NOT NULL, -- ms since epoch
+  source INT,
+  source_location Location,
+  source_health Health,
+  target INT,
+  target_location Location,
+  target_health Health,
+  ability INT,
+  action_noun INT NOT NULL,
+  action_verb INT NOT NULL,
+  action_details INT,
+  value_version VARCHAR(16),
+  value_base INT,
+  value_crit BOOL,
+  value_effective INT,
+  value_type INT,
+  value_mitigation_reason INT,
+  value_mitigation_effect_value INT,
+  value_mitigation_effect_value_name INT,
+  PRIMARY KEY (id),
+  FOREIGN KEY (source) REFERENCES Actor(id),
+  FOREIGN KEY (target) REFERENCES Actor(id),
+  FOREIGN KEY (ability) REFERENCES Name(id),
+  FOREIGN KEY (action_noun) REFERENCES Name(id),
+  FOREIGN KEY (action_verb) REFERENCES Name(id),
+  FOREIGN KEY (action_details) REFERENCES Name(id),
+  FOREIGN KEY (value_type) REFERENCES Name(id),
+  FOREIGN KEY (value_mitigation_reason) REFERENCES Name(id),
+  FOREIGN KEY (value_mitigation_effect_value_name) REFERENCES Name(id)
+);
+
+This seems like a reasonable first approximation. I'm not sure how to
+exactly use the Actor hierarchy, but the inheritance hierarchy matches
+how I think about it.
+
+Gotta work on creating the database in Postgres and then try parsing
+and inserting rows. Querying... that's something else. :)
+
+2025-08-02
+
+I think the value field needs to be parsed very differently. Rather
+than trying to impose meaning on the whole field, I should think about
+the field as subfields, like source/target. I think the value looks
+something like this, ALL of which are optional except for the base_value
+
+block 1: applied values: base_value crit '~' eff_value
+block 2: damage type: name {id}
+block 3: mitigation ability: -name {id}
+block 4: mitigation/reflection: '(' INT name {id} ')'
+
+Due to bugs and other issues that I can't possibly fathom, blocks 2-4
+have weird formats:
+
+block 2: 'name' might be empty (missing), leaving only {id}
+
+block 3: This might only be '-'
+
+block 4: Either INT or 'name {id}' might be missing
+
+Seems like I can find these blocks relatively easily:
+
+block 1: Always present, find '~' for eff value
+
+block 2: First character past block 1 is not '-' and not '('
+
+block 3: Next character is '-'
+
+block 4: Has '()' delimiters
+
+Fuck me. If I go this route, it means:
+
+1. I give up imposing much semantic meaning on these values. In other
+   words, I give up trying to do much interpretation and become more
+   dumb.
+2. I have to ditch all of the Value types and just keep LogInfo and
+   some other type that represents this bizarre union.
+3. Rewrite tests, etc. Ugh.
+
+Lunch.
+
+First, let's review my fatal parses.
+
+OK, all are either source or value. Makes sense - value is the only
+truly complicated field and I've been f'ing around with the source
+parsing. ::sigh::
+
+There is a fatal parse error in a target! Let's find that.
+
+Shit, the parsed file is so huge that I can't really work with
+it. Need to write a python script to parse the timestamp and then
+search assumiming it's sorted. :/
+
+Even wc -l takes f'ing forever.
+
+960,064,170
+
+That's a lot of lines. Almost a million lilnes. Better do it in C++.
+
+I feel like learning some coroutines so I can easily read from a file
+in a for-each loop. This requires me to learn more of the
+library. But, hey, why not? I have the time!
+
+'co_return': Produce return value of a coro when the coroutine ends.
+
+'co_await': suspend a co_routine until an await'ed condition is
+satisfied.
+
+'co_yield': produce a value to the caller and suspend.
+
+"coroutine handle": pointer to coroutine state to continue or destroy.
+
+"promise type": user-defined type that defines the return object of
+the coroutine, the logic for handling suspension and resumption, and
+how to handle exceptions.
+
+"awaiter": An object that defines how to handle 'co_await' - must
+implement await_ready(), await_suspend(), and await_resume().
+
+Lifecycle:
+
+- Creation: When coroutine function is first called, creates coroutine
+  frame holding coroutine state.
+- Initial suspension: At creation, coroutine starts but the promise
+  type can tell it to immediately suspend before the first execution.
+- Execution: coroutine executes user code until it encounters
+  co_await, co_yield, or co_return.
+- Suspension: Use awaiter's logic to determine how to suspend when
+  code executes co_await or co_yield.
+- Resumption: Coroutine can be resumed until another co_wait or
+  co_yield is encountered.
+- Final suspension: After the coroutine has completed, the promise
+  determines if it should suspend again.
+- Destruction: Coroutine frame is destroyed and releases all resources.
+
+Simple example:
+
+#+BEGIN_SRC c++
+#include <chrono>
+#include <coroutine>
+#include <iostream>
+#include <string>
+#include <thread>
+
+struct simple_awaiter {
+    std::chrono::milliseconds delay;
+
+    auto await_ready() const noexcept -> bool {
+	// Handles the case where the user wants no delay.
+	return delay.count() <= 0;
+    }
+
+    auto await_suspend(std::coroutine_handle<> handle) const -> void {
+	std::thread([handle, this] {
+	    // Simulate waiting for some event
+	    std::this_thread::sleep_for(delay);
+	    // Resume the coroutine after the delay
+	    handle.resume();
+	}).detach(); 
+    }
+
+    auto await_resume() const noexcept -> void {
+	// Simply continue execution
+    }
+};
+
+struct task {
+    struct promise_type {
+	auto get_return_object() -> task {
+	    return {std::coroutine_handle<promise_type>::from_promise(*this)};
+	}
+	auto initial_suspend() -> std::suspend_never {
+	    return {};
+	}
+	auto final_suspend() noexcept -> std::suspend_never {
+	    return {};
+	}
+	auto return_void() -> void {
+	}
+	auto unhandled_exception() -> void {
+	}
+    };
+
+    std::coroutine_handle<promise_type> m_handle;
+};
+
+auto async_wait(std::chrono::milliseconds delay) ->task {
+    std::cout << "Coroutine is about to suspend for " << delay.count() << "ms." << std::endl;
+    co_await simple_awaiter {delay};
+    std::cout << "Coroutine has resumed." << std::endl;
+    co_return;
+}
+
+// Use 'endl' to force flushing.
+auto main() -> int {
+    std::cout << "main start---->" << std::endl;
+    auto task = async_wait(std::chrono::seconds(5));
+    std::cout << "main continues." << std::endl;
+    // Ensure the coroutine has resumed: > 5s
+    std::this_thread::sleep_for(std::chrono::seconds(7));
+    std::cout << "main end <----\n";
+    return 0;
+}
+#+END_SRC
+
+------------------------------------------------------------------------
+
+From the cppreference:
+
+Coroutine is a function that can suspend and resume without a stack -
+they use a heap allocation to act as an execution frame. A coroutine
+may contain the following keywords:
+
+co_await: suspend execution until resumed
+
+co_yield: suspend execution and yield a value to caller
+
+co_return: complete execution and return value
+
+Note that a coroutine must use co_return AND NOT return.
+
+A coroutine shouldn't fall off the end (return void implicitly) - UB.
+
+The 'main' function can't be a coroutine.
+
+A coroutine is associated with:
+
+- the COROUTINE PROMISE object: this is manipulated INSIDE the
+  coroutine.  The coroutine submits its result (or an exception)
+  through the promise object. This has nothing to do with
+  std::promise.
+- the COROUTINE HANDLE: this is manipulated OUTISDE the coroutine. A
+  non-owning handle, this is used to resume execution of the coroutine
+  or destroy the coroutine frame.
+- the COROUTINE STATE: this is internal, dynamically-allocated
+  storage. It contains:
+  - the COROUTINE PROMISE object
+  - the PARAMETERS passed by the caller to the coroutine - always
+    copied by value.
+  - some representation of the CURRENT SUSPENSION POINT (a co_yield
+    statement) so that the coroutine can resume execution or know
+    which locals are in scope.
+  - LOCAL VARIABLES that are active at the suspension point - their
+    lifetime spans the suspension point
+
+The coroutine state is basically an execution frame that's implemented
+using the heap rather than the stack. This allows the coroutine's
+execution to transcend the stack and have a lifetime past the single
+execution of a function.
+
+When a coroutine BEGINS execution, it performs these steps:
+
+1. ALLOCATES the COROUTINE STATE OBJECT (execution frame) using
+   operator new. NOTE: The dynamic allocation can be avoided in
+   certain conditions, see below.
+2. COPIES all FUNCTION PARAMETERS into the coroutine state. Note that
+   ref parameters will be references in the coroutine state (not
+   copies), meaning the references can dangle because the coroutine's
+   lifespan may be longer than the variable referenced by the
+   parameter... OOPS.
+3. Calls the CONSTRUCTOR of the PROMISE OBJECT. The promise object's
+   constructor can take the same arguments as the coroutine
+   parameters OR it can be the default constructor.
+4. Calls PROMISE.GET_RETURN_OBJECT() and stores result in a local
+   variable. This will be returned to the caller when the coroutine
+   suspends for the first time. Stuff about exceptions...
+5. Calls PROMISE.INITIAL_SUSPEND() and CO_AWAITs for its
+   result. Typical coroutine Promise types either return
+   std::suspend_always if they want to be "lazy," meaning they just
+   prepare now but do no work until some later time; or, they can
+   return std::suspend_never, meaning they are eager and want to
+   immediately begin running now.
+6. When CO_AWAIT PROMISE.INITIAL_SUSPEND() resumes, start executing
+   the body of the coroutine.
+
+When a coroutine REACHES A SUSPENSION POINT (co_yield?), the return
+object (created by PROMISE.GET_RETURN_OBJECT() when a coroutine
+starts) is returned to the user after any implicit conversion to the
+coroutine's return type.
+
+When a coroutine REACHES CO_RETURN (the end of the coroutine), the
+following happens:
+
+1. Calls PROMISE.RETURN_VOID() for a NAKED CO_RETURN or co_return
+   expression that is void.
+2. Calls PROMISE.RETURN_VALUE() for a CO_RETURN that has a non-void
+   expression.
+3. DESTROYS ALL VARIABLES with automatic storage duration IN REVERSE
+   ORDER.
+4. Calls PROMISE.FINAL_SUSPEND() and CO_AWAITs the result
+
+Stuff about exceptions.
+
+The COROUTINE STATE can be destroyed because:
+
+- the coroutine terminates via CO_RETURN
+- the coroutine terminates because the CALLER DESTROYED IT using the
+  COROUTINE HANDLE
+- an UNHANDLED EXCEPTION occured in the coroutine function
+
+When the coroutine state is destroyed, it does:
+
+1. calls the PROMISE OBJECT'S DESTRUCTOR
+2. calls the DESTRUCTORS of each of the COROUTINE FUNCTION'S PARAMETERS
+3. calls OPERATOR DELETE to clean up the COROUTINE'S STATE
+4. transfers execution back to the caller
+
+The COROUTINE FUNCTION can be either a FREE FUNCTION or a MEMBER FUNCTION.
+
+For a FREE FUNCTION as the coroutine function, the COROUTINE type is
+
+task<void> foo(int x);
+
+then it's PROMISE type will be
+
+std::coroutine_traits<task<void>, int>::promise_type;
+
+For a MEMBER FUNCTION as the coroutine function, the COROUTINE type
+is
+
+task<void> Bar::foo(int x);
+
+then its PROMISE type will be
+
+std::coroutine_traits<task<void>, Bar&, int>::promise_type;
+
+* CO_AWAIT <expr>
+
+The unary operator CO_AWAIT suspends the coroutine and returns control
+to the caller.
+
+1. The expression is converted to an AWAITABLE. The awaitable can
+   either be the result of the expression OR, if the PROMISE type has
+   a member function named AWAIT_TRANSFORM, then the awaitable object
+   is produced by calling PROMISE.AWAIT_TRANSFORM(EXPR).
+2. The AWAITER object is obtained by:
+   - If there is a CO_AWAIT() operator function that's the best match,
+     then use either the free function OPERATOR CO_AWAIT or the member
+     function on the AWAITABLE object, AWAITABLE.OPERATOR CO_AWAIT()
+     and use the return as the AWAITER object.
+   - Otherwise, the AWAITER and the AWAITABLE are the same.
+3. AWAITER.AWAIT_READY() is called, which allows the coroutine to
+   either immdiately run if the return is true or suspend if the
+   return is false. This allows the coroutine to avoid an unnecessary
+   suspension if it can produce the result immediately.
+
+If awaiter.await_ready() returns false, this tells the coroutine to
+suspend and the following happens:
+
+1. The COROUTINE STATE IS POPULATED with coroutine's active local
+   variables and what's required to restart at the current suspension
+   point.
+2. AWAITER.AWAIT_SUSPEND(HANDLE) is called where HANDLE represents the
+   current coroutine. await_suspend() can examine the coroutine state
+   via handle. await_suspend() is RESPONSIBLE to SCHEDULE RESUMPTION
+   via some executo. AWAIT_SUSPEND can return either VOID or BOOL.
+3. If AWAIT_SUSPEND() returns VOID, then the coroutine remains
+   suspended and control immediately returns to the caller.
+4. If AWAIT_SUSPEND() returns BOOL, if:
+   - TRUE: return control to the caller/resumer of the current coroutine.
+   - FALSE: resume the current coroutine
+5. If AWAIT_SUSPEND() returns a COROUTINE HANDLE for a DIFFERENT
+   COROUTINE, that coroutine is resumed via HANDLE.RESUME().
+6. If AWAIT_SUSPEND() THROWS an exception...
+7. AWAITER.AWAIT_RESUME() is called (whether or not the coroutine is
+   actually suspended). awaiter.await_resume()'s return value is the
+   value of the co_await expression.
+
+NOTES:
+
+Examples look like the coroutine returns a coroutine handle to the
+caller. God, I don't understand this.
+
+* CO_YIELD:
+
+CO_YIELD <expr> returns the result of 'expr' to the caller and then
+suspends the current coroutine. It is "the common building block of
+resumable generator functions."
+
+co_yield expr;
+
+is equivalent to
+
+co_await promise.yield_value(expr);
+
+Huh.
+
+A typical generator's YIELD_VALUE stores its argument into the
+generator object and return std::suspend_always, causing the coroutine
+to suspend and return control to the caller/resumer.
+
+The dox say nothing about co_return. Hmm.
+
+So, if I want to create a generator for reading a file, such that is
+looks like this:
+
+y = std::ifstream(file);
+x = coro(y);
+
+for (auto line : x) {
+    // do something with 'line'
+}
+
+How would I go about that?
+
+Huh, cppreference coroutine_handle has an example!
+
+Sweet, I used the example in cppreference with a little function of my
+own to make a file reader that works in a range for loop. Nice.

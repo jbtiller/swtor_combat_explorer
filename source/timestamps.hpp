@@ -30,6 +30,11 @@ class Timestamps
     // Initialize using the timestamp in the supplied string.
     explicit Timestamps(const std::string& init_timestamp);
 
+    explicit Timestamps(std::optional<std::string> init_timestamp);
+
+    // Extract the timestamp from the combat event log filename.
+    auto static log_file_creation_time(const std::string& log_filename) -> std::optional<std::string>;
+
     // Return the format string suitable for parsing via std::chrono::parse() the timestamp
     // embedded in the log's filename.
     auto static log_filename_timestamp_format() {
@@ -61,6 +66,12 @@ class Timestamps
 	return diff_ms(*m_curr_log_entry_ts, to);
     }
 
+    static auto timestamp_to_ms_past_epoch(const timestamp& ts) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(ts.time_since_epoch()).count();
+    }
+
+    static auto parse_logfile_timestamp(const std::string& init_timestamp) -> timestamp;
+
 private:
     // Ignores the microseconds portion, "...%S_<micro>"
     static const std::string LOG_FILENAME_TIMESTAMP_FORMAT;
@@ -68,13 +79,11 @@ private:
     static const std::string LOG_ENTRY_TIME_FORMAT;
 
     // Extracted from the log filename
-    const timestamp m_log_creation_ts;
+    timestamp m_log_creation_ts;
 
     // These two won't be filled in until we're called for the first log entry's time, which is why
     // they're held in optionals.
 
     // Beginning of the current day of the most recent timestamp seen.
     std::optional<timestamp> m_curr_log_entry_ts;
-
-    static auto parse_logfile_timestamp(const std::string& init_timestamp) -> timestamp;
 };

@@ -58,14 +58,14 @@ auto parse_combat_log_filename_timestamp(std::string_view log_filename) -> void 
 }
 
 auto log_source_target(const LogParserTypes::SourceOrTarget& st, int line_num, std::string_view st_str) -> void {
-    if (std::holds_alternative<LogParserTypes::PcSubject>(st.subject)) {
-        const auto& pc = std::get<LogParserTypes::PcSubject>(st.subject);
+    if (std::holds_alternative<LogParserTypes::PcActor>(st.actor)) {
+        const auto& pc = std::get<LogParserTypes::PcActor>(st.actor);
         BLT_LINE(error, line_num) << "PC " << st_str << ": name=" << std::quoted(pc.name) << ", id=" << pc.id;
-    } else if (std::holds_alternative<LogParserTypes::NpcSubject>(st.subject)) {
-        const auto& npc = std::get<LogParserTypes::NpcSubject>(st.subject);
+    } else if (std::holds_alternative<LogParserTypes::NpcActor>(st.actor)) {
+        const auto& npc = std::get<LogParserTypes::NpcActor>(st.actor);
         BLT_LINE(error, line_num) << "NPC " << st_str << ": name=" << std::quoted(npc.name_id.name) << ", id=" << npc.name_id.id;
     } else {
-        const auto& comp = std::get<LogParserTypes::CompanionSubject>(st.subject);
+        const auto& comp = std::get<LogParserTypes::CompanionActor>(st.actor);
         BLT_LINE(error, line_num) << "Comp " << st_str << ": pc_name=" << std::quoted(comp.pc.name) << ", id=" << comp.pc.id
                                   << ", comp_name=" << std::quoted(comp.companion.name_id.name)
                                   << ", comp_id=" << comp.companion.name_id.id
@@ -153,7 +153,11 @@ auto main(int argc, char** argv) -> int {
             }
 
             const auto& ability = log_entry->ability;
-            BLT_LINE(error, line_num) << "Ability: name=" << std::quoted(ability.name) << ", id=" << ability.id;
+            if (ability) {
+                BLT_LINE(error, line_num) << "Ability: name=" << std::quoted(ability->name) << ", id=" << ability->id;
+            } else {
+                BLT_LINE(error, line_num) << "Ability field is empty.";
+            }
 
             auto& action = log_entry->action;
             auto has_detail = action.detail.ref().has_value();
@@ -190,7 +194,7 @@ auto main(int argc, char** argv) -> int {
                 auto threat = std::get<double>(*log_entry->threat);
                 BLT_LINE(error, line_num) << "Threat: threat=" << threat;
             } else {
-                auto threat = std::get<std::string_view>(*log_entry->threat);
+                auto threat = std::get<std::string>(*log_entry->threat);
                 BLT_LINE(error, line_num) << "Threat: threat=" << std::quoted(threat);
             }
         }

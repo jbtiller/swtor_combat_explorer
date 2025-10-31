@@ -36,7 +36,7 @@ auto LogParserHelpers::str_to_uint64(sv field, uint64_t* first_non_int_char) con
         return {};
     }
     if (endptr == ul_str.data()) {
-	LL(warning) << "Did not encounter an integer character.";
+	LL(error) << "Did not encounter an integer character.";
 	return {};
     }
     if (first_non_int_char != nullptr) {
@@ -44,6 +44,11 @@ auto LogParserHelpers::str_to_uint64(sv field, uint64_t* first_non_int_char) con
     }
     return ret;
 }
+
+// auto LogParserHelpers::str_to_uint(sv field, unsigned* first_non_int_char) const -> std::optional<unsigned> {
+//     LL(trace) << "Parsing string " << std::quoted(field) << " as an unsigned.";
+//     auto as_uint64 = str_to_uint64(field, static_cast<uint64_t*>(first_non_int_char));
+// }
 
 auto LogParserHelpers::str_to_double(sv field, uint64_t* first_non_double_char) const -> std::optional<double> {
     LL(trace) << "Parsing string " << std::quoted(field) << " as a double.";
@@ -67,11 +72,11 @@ auto LogParserHelpers::str_to_double(sv field, uint64_t* first_non_double_char) 
     }
 #   pragma GCC diagnostic pop
     if (endptr == field_s.data()) {
-	LL(warning) << "Did not encounter a double character. Skipping.";
+	LL(error) << "Did not encounter a double character. Skipping.";
 	return {};
     }
     if (*std::prev(endptr) == '.') {
-	LL(warning) << "Double has no integer beyond the decimal point. Skipping.";
+	LL(error) << "Double has no integer beyond the decimal point. Skipping.";
 	return {};
     }
 
@@ -115,7 +120,7 @@ auto LogParserHelpers::get_next_field(sv line, char begin_delim, char end_delim,
 
     const auto beg_field = std::find(line.begin(), line.end(), begin_delim);
     if (beg_field == line.end()) {
-        BLT_LINE(warning, m_line_num) << "Line did not contain beginning delimiter '" << begin_delim << "'.  Skipping.";
+        BLT_LINE(info, m_line_num) << "Line did not contain beginning delimiter '" << begin_delim << "'.  Skipping.";
         return {};
     }
     BLT_LINE(trace, m_line_num) << "In " << std::quoted(line) << " found '" << begin_delim << "' at pos "
@@ -127,7 +132,7 @@ auto LogParserHelpers::get_next_field(sv line, char begin_delim, char end_delim,
         const auto next_delim = std::find_if(curr_start, line.end(), [begin_delim, end_delim] (auto c) {
             return begin_delim == c || end_delim == c; });
         if (next_delim == line.end()) {
-            BLT_LINE(warning, m_line_num) << "Unbalanced opening delimiter - did not find ending delimiter '" << end_delim << "'.";
+            BLT_LINE(error, m_line_num) << "Unbalanced opening delimiter - did not find ending delimiter '" << end_delim << "'.";
             return {};
         }
         BLT_LINE(trace, m_line_num) << "In " << std::quoted(line) << " found '" << *next_delim << "' at pos "
@@ -151,7 +156,7 @@ auto LogParserHelpers::get_next_field(sv line, char begin_delim, char end_delim,
 auto LogParserHelpers::parse_st_location(sv field) const -> std::optional<LogParserTypes::Location> {
     LL(trace) << "Parsing s/t location from string " << std::quoted(field);
     if (std::count(field.begin(), field.end(), ',') != 3) {
-        LL(warning) << "Did not find all components (x,y,z,rot) in the location string. Skipping.";
+        LL(error) << "Did not find all components (x,y,z,rot) in the location string. Skipping.";
         return {};
     }
 
@@ -165,7 +170,7 @@ auto LogParserHelpers::parse_st_location(sv field) const -> std::optional<LogPar
         auto double_str = sv(beg_pos, sep_pos);
         auto val = str_to_double(double_str);
         if (!val) {
-	    LL(warning) << "Location component " << std::quoted(double_str) << " (#" << std::distance(to_store.begin(), curr_store)
+	    LL(error) << "Location component " << std::quoted(double_str) << " (#" << std::distance(to_store.begin(), curr_store)
 			<< ") could not be converted to a double.";
             return {};
         }
@@ -186,19 +191,19 @@ auto LogParserHelpers::parse_st_health(sv field) const -> std::optional<Health> 
 
     const auto health_sep = std::find(field.begin(), field.end(), '/');
     if (health_sep == field.end()) {
-        LL(warning) << "s/t health field missing '/' separator. Skipping.";
+        LL(error) << "s/t health field missing '/' separator. Skipping.";
         return {};
     }
 
     auto curr_health = str_to_uint64({field.begin(), health_sep});
     if (!curr_health) {
-        LL(warning) << "s/t current health field is not a valid integer. Skipping.";
+        LL(error) << "s/t current health field is not a valid integer. Skipping.";
         return {};
     }
 
     auto total_health = str_to_uint64({std::next(health_sep), field.end()});
     if (!total_health) {
-        LL(warning) << "s/t total health field is not a valid integer. Skipping.";
+        LL(error) << "s/t total health field is not a valid integer. Skipping.";
         return {};
     }
 
@@ -218,9 +223,9 @@ auto LogParserHelpers::parse_name_and_id(sv field, uint64_t* dist_beyond_field_d
     const auto dist_to_delim = std::distance(field.begin(), name_end);
 
     if (dist_to_delim == 1) {
-        LL(warning) << "Name string is empty";
+        LL(debug) << "Name string is empty";
     } else if (*std::prev(name_end) != ' ') {
-        LL(warning) << "Name substring does not have trailing space.";
+        LL(debug) << "Name substring does not have trailing space.";
     }
 
     auto name = strip({field.begin(), name_end}, " ");
@@ -229,13 +234,13 @@ auto LogParserHelpers::parse_name_and_id(sv field, uint64_t* dist_beyond_field_d
     uint64_t dist_to_first_char_beyond_field {};
     auto id_str = get_next_field(field, '{', '}', &dist_to_first_char_beyond_field);
     if (!id_str) {
-        LL(warning) << "Failed to extract numeric ID field from name/id string. Skipping.";
+        LL(error) << "Failed to extract numeric ID field from name/id string. Skipping.";
         return {};
     }
 
     auto id = str_to_uint64(*id_str);
     if (!id) {
-        LL(warning) << "Failed to parse ID string as an integer. Skipping.";
+        LL(error) << "Failed to parse ID string as an integer. Skipping.";
         return {};
     }
 
@@ -272,18 +277,18 @@ auto LogParserHelpers::parse_name_id_instance(sv field) const -> std::optional<L
     uint64_t dist_to_first_non_int_char {};
     auto inst = str_to_uint64(field, &dist_to_first_non_int_char);
     if (!inst) {
-        LL(warning) << "Instance string " << std::quoted(field) << " is not a valid uint64_t. Skipping.";
+        LL(error) << "Instance string " << std::quoted(field) << " is not a valid uint64_t. Skipping.";
         return {};
     }
 
     return LogParserTypes::NameIdInstance {.name_id = *name_id, .instance = *inst};
 }
 
-auto LogParserHelpers::parse_source_target_subject(sv field) const -> std::optional<LogParserTypes::Subject> {
-    LL(trace) << "Parsing " << std::quoted(field) << " as a source/target (s/t) subject.";
+auto LogParserHelpers::parse_source_target_actor(sv field) const -> std::optional<LogParserTypes::Actor> {
+    LL(trace) << "Parsing " << std::quoted(field) << " as a source/target (s/t) actor.";
     field = strip(field, " ");
     if (field.empty()) {
-        LL(warning) << "source/target subject field is empty. Skipping.";
+        LL(info) << "source/target actor field is empty. Skipping.";
         return {};
     }
 
@@ -297,7 +302,7 @@ auto LogParserHelpers::parse_source_target_subject(sv field) const -> std::optio
         sv name;
         uint64_t pc_id {};
         if (pc_name_id_sep == field.end()) {
-            LL(warning) << "PC s/t is missing name/id separator, '#'. Checking for UNKNOWN.";
+            LL(info) << "PC s/t is missing name/id separator, '#'. Checking for UNKNOWN.";
             if (field.starts_with("UNKNOWN")) {
                 LL(warning) << "PC is UNKNOWN with no ID.";
                 name = sv {field.begin(), pc_end};
@@ -314,14 +319,14 @@ auto LogParserHelpers::parse_source_target_subject(sv field) const -> std::optio
             uint64_t dist_to_first_non_uint64_char {};
             auto pc_id_maybe = str_to_uint64(field, &dist_to_first_non_uint64_char);
             if (!pc_id_maybe) {
-                LL(warning) << "PC ID string to ulong conversion failed. Skipping.";
+                LL(error) << "PC ID string to ulong conversion failed. Skipping.";
                 return {};
             }
             pc_id = *pc_id_maybe;
             field.remove_prefix(dist_to_first_non_uint64_char);
         }
 
-        LogParserTypes::PcSubject pcs {.name = std::string(name), .id = pc_id};
+        LogParserTypes::PcActor pcs {.name = std::string(name), .id = pc_id};
         
         if (pc_comp_sep == field.end()) {
             LL(trace) << "s/t is a PC.";
@@ -332,17 +337,17 @@ auto LogParserHelpers::parse_source_target_subject(sv field) const -> std::optio
         LL(trace) << "s/t is a PC's companion.";
         auto pc_comp = parse_name_id_instance({std::next(pc_comp_sep), field.end()});
         if (!pc_comp) {
-            LL(warning) << "Failed to parse companion's name, id, and instance. Skipping.";
+            LL(error) << "Failed to parse companion's name, id, and instance. Skipping.";
             return {};
         }
 
-        return LogParserTypes::CompanionSubject {.pc = pcs, .companion = *pc_comp};
+        return LogParserTypes::CompanionActor {.pc = pcs, .companion = *pc_comp};
     }
 
     LL(trace) << "s/t is a NPC.";
     auto npc = parse_name_id_instance({field.begin(), field.end()});
     if (!npc) {
-        LL(warning) << "Failed to parse NPC's name/ID and instance. Skipping.";
+        LL(error) << "Failed to parse NPC's name/ID and instance. Skipping.";
         return {};
     }
 
@@ -355,50 +360,50 @@ auto LogParserHelpers::parse_source_target_field(sv field) const -> std::optiona
 
     const auto name_loc_sep = std::find(field.begin(), field.end(), '|');
     if (name_loc_sep == field.end()) {
-        LL(warning) << "field missing source/location separator, '|'. Skipping.";
+        LL(info) << "field missing source/location separator, '|'. Skipping.";
             return {};
     }
-    auto subject_field = sv(field.begin(), name_loc_sep);
+    auto actor_field = sv(field.begin(), name_loc_sep);
     field.remove_prefix(static_cast<sv::size_type>(std::distance(field.begin(), name_loc_sep) + 1));
 
     const auto loc_health_sep = std::find(field.begin(), field.end(), '|');
     if (loc_health_sep == field.end()) {
-        LL(warning) << "field missing location/health separator, '|'. Skipping.";
+        LL(error) << "field missing location/health separator, '|'. Skipping.";
             return {};
     }
     const auto location_field = sv(field.begin(), loc_health_sep);
     auto health_field = sv(std::next(loc_health_sep), field.end());
 
-    auto subject = parse_source_target_subject(subject_field);
-    if (!subject) {
-        LL(warning) << "Failed to parse s/t subject subfield. Skipping.";
+    auto actor = parse_source_target_actor(actor_field);
+    if (!actor) {
+        LL(error) << "Failed to parse s/t actor subfield. Skipping.";
         return {};
     }
 
     auto loc_str = get_next_field(location_field, '(', ')');
     if (!loc_str) {
-        LL(warning) << "Location delimiters '()' not found. Skipping.";
+        LL(error) << "Location delimiters '()' not found. Skipping.";
         return {};
     }
     auto location = parse_st_location(*loc_str);
     if (!location) {
-        LL(warning) << "Failed to parse location subfield. Skipping.";
+        LL(error) << "Failed to parse location subfield. Skipping.";
         return {};
     }
 
     auto health_str = get_next_field(health_field, '(', ')');
     if (!health_str) {
-        LL(warning) << "Health field delimiters '()' not found. Skipping.";
+        LL(error) << "Health field delimiters '()' not found. Skipping.";
         return {};
     }
 
     auto health = parse_st_health(*health_str);
     if (!health) {
-        LL(warning) << "Failed to parse s/t health subfield. Skipping..";
+        LL(error) << "Failed to parse s/t health subfield. Skipping..";
         return {};
     }
 
-    return LogParserTypes::SourceOrTarget {.subject = *subject, .loc = *location, .health = *health};
+    return LogParserTypes::SourceOrTarget {.actor = *actor, .loc = *location, .health = *health};
 }
 
 auto LogParserHelpers::parse_ability_field(std::string_view field) const -> std::optional<LogParserTypes::Ability> {
@@ -412,13 +417,13 @@ auto LogParserHelpers::parse_action_field(sv field) const -> std::optional<Actio
 
     auto action_verb = parse_name_and_id(field);
     if (!action_verb) {
-        LL(warning) << "Unable to parse action verb from field. Skipping.";
+        LL(error) << "Unable to parse action verb from field. Skipping.";
         return {};
     }
     
     auto colon = std::find(field.begin(), field.end(), ':');
     if (colon == field.end()) {
-        LL(warning) << "Missing separator (:) between action verb and action noun. Skipping.";
+        LL(error) << "Missing separator (:) between action verb and action noun. Skipping.";
         return {};
     }
     field.remove_prefix(static_cast<sv::size_type>(std::distance(field.begin(), colon) + 1));
@@ -427,12 +432,12 @@ auto LogParserHelpers::parse_action_field(sv field) const -> std::optional<Actio
     LL(trace) << "parsing action noun from field " << std::quoted(field);
     auto action_noun = parse_name_and_id(field, &dist_to_first_char_after_id);
     if (!action_noun) {
-        LL(warning) << "Unable to parse action noun from field. Skipping.";
+        LL(error) << "Unable to parse action noun from field. Skipping.";
         return {};
     }
     field.remove_prefix(dist_to_first_char_after_id);
     
-    Action ret {.verb = Action::Verb(*action_verb), .noun = Action::Noun(*action_noun)};
+    Action ret {Action::Verb(*action_verb), Action::Noun(*action_noun), Action::Detail(std::optional<LogParserTypes::NameId>())};
 
     if (field.empty()) {
         LL(trace) << "Action noun has no additional details.";
@@ -440,16 +445,16 @@ auto LogParserHelpers::parse_action_field(sv field) const -> std::optional<Actio
     }
 
     if (field[0] != ' ' && field[0] != '/') {
-        LL(warning) << "Remaining field to be parsed: " << std::quoted(field);
-        LL(warning) << "Action noun details subfield separator (' ' or '/') not found - "
-                    << "got " << field[0] << "' instead? Ignoring and return.";
+        LL(error) << "Remaining field to be parsed: " << std::quoted(field);
+        LL(error) << "Action noun details subfield separator (' ' or '/') not found - "
+                  << "got " << field[0] << "' instead? Ignoring and return.";
         return ret;
     }
     field.remove_prefix(1);
 
     auto noun_details = parse_name_and_id(field);
     if (!noun_details) {
-        LL(warning) << "Found details delimiter but unable to parse action noun details from field. Skipping.";
+        LL(error) << "Found details delimiter but unable to parse action noun details from field. Skipping.";
         return {};
     }
 
@@ -458,7 +463,7 @@ auto LogParserHelpers::parse_action_field(sv field) const -> std::optional<Actio
 }
 
 auto LogParserHelpers::parse_mitigation_effect(std::string_view field) const -> std::optional<LogParserTypes::MitigationEffect> {
-    LL(info) << "Parsing mitigation effect from field " << std::quoted(field);
+    LL(trace) << "Parsing mitigation effect from field " << std::quoted(field);
 
     LogParserTypes::MitigationEffect effect;
     uint64_t idx_just_beyond {};
@@ -477,7 +482,7 @@ auto LogParserHelpers::parse_mitigation_effect(std::string_view field) const -> 
 }
 
 auto LogParserHelpers::parse_value_field(std::string_view field) const -> std::optional<LogParserTypes::Value> {
-    LL(info) << "Parsing value from field " << std::quoted(field);
+    LL(trace) << "Parsing value from field " << std::quoted(field);
 
     if (field.starts_with("he")) {
         LL(trace) << "Value is the unique sentinel " << std::quoted(field);
@@ -571,5 +576,5 @@ auto LogParserHelpers::parse_threat_field(std::string_view field) const -> std::
         return *thr_dub;
     }
 
-    return field;
+    return std::string{field};
 }

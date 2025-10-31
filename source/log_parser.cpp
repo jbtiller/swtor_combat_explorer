@@ -85,80 +85,69 @@ auto LogParser::parse_line(sv line, int line_num, Timestamps& ts_parser) -> std:
     line.remove_prefix(dist_beyond_field_delimiter);
 
     // ability is always present but can be in 3 forms: empty, name/ID, and empty name with ID. WTF?
-    // appears to be empty for these actions:
-    // AreaEntered
-    // DisciplineChanged
-    // TargetSet
-    // TargetCleared
-    // EnterCombat
-    // Restore (ex is focus point)
-    // LeaveCover
-    // Revived
-    // FallingDamage
-    // ExitCombat
-    // Spend (ex is focus point)
-    // Taunt
-    // AbilityInterrupt
-    // Death
     auto ability_field = m_lph.get_next_field(line, '[', ']', &dist_beyond_field_delimiter);
     if (!ability_field) {
         BLT_LINE(fatal, line_num) << "Unable to extract ability field (#4) from log line. Skipping.";
         return {};
     }
-    decltype(m_lph.parse_name_and_id(*ability_field)) ability {};
+
+    auto ability = m_lph.parse_name_and_id(*ability_field);
     if (ability_field == "") {
         BLT_LINE(warning, line_num) << "Ability field is empty. Ignoring and continuing.";
-        ability = std::make_optional<LogParserTypes::NameId>({.name = "", .id = 0});
-    } else {
-        ability = m_lph.parse_name_and_id(*ability_field);
-        if (!ability) {
-            BLT_LINE(fatal, line_num) << "Unable parse ability field. Skipping.";
-            return {};
-        }
+    } else if (!ability) {
+        BLT_LINE(fatal, line_num) << "Failed to successfully parse ability field.";
+        return {};
     }
     line.remove_prefix(dist_beyond_field_delimiter);
 
+    // action field must always be present and populated with "verb: noun" 
+    //
+    // A 3rd field, "detail", is optional and only used in two cases:
+    //
+    // 1. AreaEntered when the area is instanced with an associated group size and difficulty, e.g. "16 Player Story".
+    // 2. The advanced class for DisciplineChanged, e.g. "DisciplineChanged {.}: Shadow {.} Deception {.}".
+    
     auto action_field = m_lph.get_next_field(line, '[', ']', &dist_beyond_field_delimiter);
     if (!action_field) {
-        BLT_LINE(fatal, line_num) << "Unable to extract action field (#5) from log line. Skipping.";
+        BLT_LINE(error, line_num) << "Unable to extract action field (#5) from log line. Skipping.";
         return {};
     }
     auto action = m_lph.parse_action_field(*action_field);
     if (!action) {
-        BLT_LINE(fatal, line_num) << "Unable to parse action field from log line. Skipping.";
+        BLT_LINE(error, line_num) << "Unable to parse action field from log line. Skipping.";
         return {};
     }
-    BLT_LINE(trace, line_num) << "Action: verb=" << action->verb.ref().name << ", noun=" << action->noun.ref().name;
+    BLT_LINE(info, line_num) << "Action: verb=" << action->verb.ref().name << ", noun=" << action->noun.ref().name;
     line.remove_prefix(dist_beyond_field_delimiter);
-    BLT_LINE(warning, line_num) << "Line after action: " << std::quoted(line);
+    BLT_LINE(info, line_num) << "Line after action: " << std::quoted(line);
 
     LogParserTypes::ParsedLogLine ret;
     ret.ts = *ts;
     ret.source = source;
     ret.target = target;
-    ret.ability = *ability;
+    ret.ability = ability;
     ret.action = *action;
     
     auto value_field = m_lph.get_next_field(line, '(', ')', &dist_beyond_field_delimiter);
     if (!value_field) {
-        BLT_LINE(warning, line_num) << "Optional value field (#6) not present in log line. Ignoring.";
+        BLT_LINE(info, line_num) << "Optional value field (#6) not present in log line. Ignoring.";
     } else {
         ret.value = m_lph.parse_value_field(*value_field);
         BLT_LINE(info, line_num) << "parse_value_field returns '" << (ret.value ? "true'" : "false'");
         if (!ret.value) {
-            BLT_LINE(fatal, line_num) << "Value field (#6) present but could not be parsed. Ignoring.";
+            BLT_LINE(error, line_num) << "Value field (#6) present but could not be parsed. Ignoring.";
         }
         line.remove_prefix(dist_beyond_field_delimiter);
     }
-    BLT_LINE(warning, line_num) << "Line after value: " << std::quoted(line);
+    BLT_LINE(info, line_num) << "Line after value: " << std::quoted(line);
 
     auto threat_field = m_lph.get_next_field(line, '<', '>', &dist_beyond_field_delimiter);
     if (!threat_field) {
-        BLT_LINE(warning, line_num) << "Optional threat field (#7) not present in log line. Ignoring.";
+        BLT_LINE(info, line_num) << "Optional threat field (#7) not present in log line. Ignoring.";
     } else {
         ret.threat = m_lph.parse_threat_field(*threat_field);
         if (!ret.threat) {
-            BLT_LINE(fatal, line_num) << "Threat field (#7) present but could not be parsed. Ignoring.";
+            BLT_LINE(error, line_num) << "Threat field (#7) present but could not be parsed. Ignoring.";
         }
     }
 

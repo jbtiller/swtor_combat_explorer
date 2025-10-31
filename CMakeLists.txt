@@ -1,9 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 
-include(cmake/prelude.cmake)
-
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# TODO: Figure out how to add profiling. Then profile!
 
 project(
   swtor_combat_explorer
@@ -13,8 +10,29 @@ project(
   LANGUAGES CXX
 )
 
+include(cmake/prelude.cmake)
+include(FetchContent)
 include(cmake/project-is-top-level.cmake)
 include(cmake/variables.cmake)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+FetchContent_Declare(
+  libpqxx
+  GIT_REPOSITORY https://github.com//jtv/libpqxx.git
+  GIT_TAG 7.10.1
+)
+
+FetchContent_MakeAvailable(libpqxx)
+
+FetchContent_Declare(
+  gflags
+  GIT_REPOSITORY https://github.com/gflags/gflags.git
+  GIT_TAG v2.2.2
+)
+
+FetchContent_MakeAvailable(gflags)
 
 find_package(
   Boost
@@ -22,7 +40,7 @@ find_package(
   COMPONENTS log
 )
 
-# ---- Declare library ----
+# ---- Declare parser library ----
 
 add_library(
   swtor_combat_explorer_lib
@@ -31,6 +49,7 @@ add_library(
   source/timestamps.cpp
   source/log_parser.cpp
   source/log_parser_helpers.cpp
+  source/logging.cpp
 )
 
 target_include_directories(
@@ -41,7 +60,7 @@ target_include_directories(
 
 target_link_libraries(
   swtor_combat_explorer_lib
-   Boost::log
+  Boost::log
 )
 
 target_compile_features(
@@ -49,8 +68,57 @@ target_compile_features(
   PUBLIC cxx_std_20
 )
 
-# ---- Declare executable ----
+target_compile_options(
+  swtor_combat_explorer_lib
+  PRIVATE -pg
+)
 
+target_link_options(
+  swtor_combat_explorer_lib
+  PRIVATE -pg
+)
+
+# ---- Declare populator library ----
+
+add_library(
+  swtor_combat_populate_db_lib
+  STATIC
+  source/db_populator.cpp
+)
+
+target_include_directories(
+  swtor_combat_populate_db_lib ${warning_guard}
+  PUBLIC 
+  "\$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/source>"
+  SYSTEM "${libpqxx_BINARY_DIR}/include"
+)
+
+target_link_libraries(
+  swtor_combat_populate_db_lib
+  PRIVATE swtor_combat_explorer_lib
+  Boost::log
+  pqxx
+  pq
+)
+
+target_compile_features(
+  swtor_combat_populate_db_lib
+  PUBLIC cxx_std_20
+)
+
+target_compile_options(
+  swtor_combat_populate_db_lib
+  PRIVATE -pg
+)
+
+target_link_options(
+  swtor_combat_populate_db_lib
+  PRIVATE -pg
+)
+
+# ---- Declare parser executable ----
+
+# Currently the driver for the parser to just display parsed data.
 add_executable(
   swtor_combat_explorer_exe
   source/main.cpp
@@ -74,6 +142,94 @@ target_link_libraries(
   swtor_combat_explorer_exe
   PRIVATE swtor_combat_explorer_lib
   Boost::log
+)
+
+target_compile_options(
+  swtor_combat_explorer_exe
+  PRIVATE -pg
+)
+
+target_link_options(
+  swtor_combat_explorer_exe
+  PRIVATE -pg
+)
+
+# ---- Declare populator executable ----
+
+# This uses the parser to populate a database.
+add_executable(
+  swtor_combat_populate_db_exe
+  source/swtor_combat_populate_db.cpp
+)
+
+set_property(
+  TARGET swtor_combat_populate_db_exe
+  PROPERTY OUTPUT_NAME swtor_combat_populate_db
+)
+
+target_include_directories(
+  swtor_combat_populate_db_exe ${warning_guard}
+  PUBLIC
+  "\$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/source>"
+  SYSTEM "${libpqxx_BINARY_DIR}/include"
+)
+
+
+target_compile_features(
+  swtor_combat_populate_db_exe
+  PRIVATE cxx_std_20
+)
+
+target_link_libraries(
+  swtor_combat_populate_db_exe
+  PRIVATE swtor_combat_populate_db_lib
+  Boost::log
+  pqxx
+  pq
+)
+
+target_compile_options(
+  swtor_combat_populate_db_exe
+  PRIVATE -pg
+)
+
+target_link_options(
+  swtor_combat_populate_db_exe
+  PRIVATE -pg
+)
+
+# ---- Declare database searcher executable ----
+
+# This uses pqxx to search the database
+add_executable(
+  swtor_combat_search_db_exe
+  source/swtor_combat_search_db.cpp
+)
+
+set_property(
+  TARGET swtor_combat_search_db_exe
+  PROPERTY OUTPUT_NAME swtor_combat_search_db
+)
+
+target_include_directories(
+  swtor_combat_search_db_exe ${warning_guard}
+  PUBLIC
+  "\$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/source>"
+  SYSTEM "${libpqxx_BINARY_DIR}/include"
+)
+
+
+target_compile_features(
+  swtor_combat_search_db_exe
+  PRIVATE cxx_std_20
+)
+
+target_link_libraries(
+  swtor_combat_search_db_exe
+  Boost::log
+  gflags
+  pqxx
+  pq
 )
 
 # ---- Install rules ----

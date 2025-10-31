@@ -24,40 +24,40 @@
 #define WRAPPER(name, T) \
   class name \
   { \
-  public: \
-    explicit name(T val) \
-        : m_wrapped(std::move(val)) \
-    { \
-    } \
-    name() = default; \
-\
-    auto val() -> T \
-    { \
-      return m_wrapped; \
-    } \
-\
-    auto ref() -> T& \
-    { \
-      return m_wrapped; \
-    } \
-\
-    auto operator&() -> T* \
-    { \
-      return &m_wrapped; \
-    } \
-\
-    operator T() \
-    { \
-      return m_wrapped; \
-    } \
-\
-    operator T&() \
-    { \
-      return m_wrapped; \
-    } \
-\
-  private: \
-    T m_wrapped; \
+    public: \
+      using wrapped_type = T; \
+      explicit name(T val) \
+          : m_wrapped(std::move(val)) { \
+      } \
+  \
+      name() = delete; \
+  \
+      auto val() const -> T { \
+        return m_wrapped; \
+      } \
+  \
+      auto ref() -> T& { \
+        return m_wrapped; \
+      } \
+  \
+      auto cref() const -> const T& { \
+        return m_wrapped; \
+      } \
+  \
+      auto operator&() -> T* { \
+        return &m_wrapped; \
+      } \
+  \
+      operator T() const { \
+        return m_wrapped; \
+      } \
+  \
+      operator T&() { \
+        return m_wrapped; \
+      } \
+  \
+    private: \
+      T m_wrapped; \
   }
 
 WRAPPER(foo, int);

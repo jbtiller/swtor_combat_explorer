@@ -32,6 +32,24 @@ public:
     auto str_to_uint64(std::string_view field, uint64_t* dist_to_first_non_int_char=nullptr) const -> std::optional<uint64_t> ;
 
     /**
+     * Convert a string to a unsigned int
+     *
+     * 
+     *
+     * @param[in] field String to be parsed for an integer
+     * @param[out] dist_to_first_non_int_char [optional] On success, populated with the number of steps to reach the
+     *     first character past the integer, aka the index of the first non-integer character.
+     * 
+     * @returns Optional that wraps a uint64 on success or empty optional in the following conditions: <ol>
+     *   <li> `strtoul()` sets errno to non-zero
+     *   <li> `strtoul()` returns ULONG_MAX
+     *   <li> `strtoul()` sets its out-param `endptr` to the beginning of the input `field`. This is
+     *   an additional check to catch emptry strings or strings only of whitespace.
+     * </ol>
+     */
+    // auto str_to_uint(std::string_view field, unsigned* dist_to_first_non_int_char=nullptr) const -> std::optional<unsigned> ;
+
+    /**
      * Convert a string to a double
      *
      * Relies on cstdlib strtod() with additional checks to trigger failure if no double is found.
@@ -161,8 +179,8 @@ public:
     /**
      * Parse a string name, numeric ID, and numeric instance from a string
      *
-     * Name/ID/Instance is a combination used to identify subjects that can have multiple copies - the combination
-     * identifies the unique subject in the combat. This generally means a subject is a non-unique enemy or a player
+     * Name/ID/Instance is a combination used to identify actors that can have multiple copies - the combination
+     * identifies the unique actor in the combat. This generally means an actor is a non-unique enemy or a player
      * companion.
      *
      * The format of this is: `"name {id}:instance"`. `name` and `id` are parsed as in `parse_name_and_id()`; `instance`
@@ -176,9 +194,9 @@ public:
     auto parse_name_id_instance(std::string_view field) const -> std::optional<LogParserTypes::NameIdInstance>;
 
     /**
-     * Parse the subject of a source/target field
+     * Parse the actor of a source/target field
      *
-     * This parses the name and identifier(s) of the subject of a source field or, technically, the object of a target
+     * This parses the name and identifier(s) of the actor of a source field or, technically, the object of a target
      * field. There are three possible formats to this field, one each for a PC, NPC, and PC's companion.
      *
      * <ol>
@@ -197,21 +215,21 @@ public:
      *
      * @param[in] field view to be parsed
      *
-     * @returns On success, an optional populated with a Subject object; on failure, an empty optional.
+     * @returns On success, an optional populated with an actor object; on failure, an empty optional.
      */
-    auto parse_source_target_subject(std::string_view field) const -> std::optional<LogParserTypes::Subject>;
+    auto parse_source_target_actor(std::string_view field) const -> std::optional<LogParserTypes::Actor>;
 
     /**
      * Parse a source or target (s/t) field
      *
      * A s/t field has the following format (BNF):
      *
-     * subject '|(' location ')|(' health ')'
+     * actor '|(' location ')|(' health ')'
      *
      * Where:
      *
      * <ul>
-     * <li> `subject` is in the format parsed by `parse_source_target_subject()`
+     * <li> `actor` is in the format parsed by `parse_source_target_actor()`
      * <li> `location` is in the format parsed by `parse_st_location()`
      * <li> `health` is in the format parsed by `parse_st_health()`
      * </ul>
@@ -338,7 +356,6 @@ public:
      *      then the damage is called "typeless."
      * <li> Mitigation reason: The damage might be reduced and if so this reason describes why. This typically refers to
      *      an ability the target has to reduce damage, such as a "shield" or maybe a "parry."
-
      * <li> Mitigation effect: This is what happened when the damage was mitigated. The most common forms are
      *      absorption, meaning the damage was mitigated by some ability (shield, sage bubble, etc.), or reflection,
      *      where the damage was reflect (applied) back to the source. The mitigation effect can contain the amount of

@@ -3,7 +3,10 @@
 #include <string_view>
 #include <variant>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wall"
 #include "gtest.h"
+#pragma GCC diagnostic pop
 
 #include "timestamps.hpp"
 #include "log_parser_types.hpp"
@@ -404,123 +407,123 @@ TEST(ParseNameIdInstance, Valid) {
     EXPECT_EQ(niid->instance, 6);
 }
 
-TEST(ParseSourceTargetSubject, Invalid) {
-    auto sts = lph.parse_source_target_subject("");
+TEST(ParseSourceTargetActor, Invalid) {
+    auto sts = lph.parse_source_target_actor("");
     EXPECT_FALSE(sts);
 }
 
-TEST(ParseSourceTargetSubject, PcInvalid) {
-    auto sts = lph.parse_source_target_subject("@#");
+TEST(ParseSourceTargetActor, PcInvalid) {
+    auto sts = lph.parse_source_target_actor("@#");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("@abc#");
+    sts = lph.parse_source_target_actor("@abc#");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("@abc123");
+    sts = lph.parse_source_target_actor("@abc123");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("@NOTUNKNOWN");
+    sts = lph.parse_source_target_actor("@NOTUNKNOWN");
     EXPECT_FALSE(sts);
 }
 
 // Uses same test inputs as ParseNameIdInstance but with a valid PC name/id in the front.
-TEST(ParseSourceTargetSubject, CompInvalid) {
-    auto sts = lph.parse_source_target_subject("@abc#123/");
+TEST(ParseSourceTargetActor, CompInvalid) {
+    auto sts = lph.parse_source_target_actor("@abc#123/");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("@abc#123/abc");
+    sts = lph.parse_source_target_actor("@abc#123/abc");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("@abc#123/abc {}");
+    sts = lph.parse_source_target_actor("@abc#123/abc {}");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("@abc#123/abc {1}");
+    sts = lph.parse_source_target_actor("@abc#123/abc {1}");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("@abc#123/abc {1}:");
+    sts = lph.parse_source_target_actor("@abc#123/abc {1}:");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("@abc#123/abc {1}:");
+    sts = lph.parse_source_target_actor("@abc#123/abc {1}:");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("@abc#123/abc {}:1");
+    sts = lph.parse_source_target_actor("@abc#123/abc {}:1");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("@abc#123/abc {} 1");
+    sts = lph.parse_source_target_actor("@abc#123/abc {} 1");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("@UNKNOW/abc {1}:1");
+    sts = lph.parse_source_target_actor("@UNKNOW/abc {1}:1");
     EXPECT_FALSE(sts);
 }
 
 // Uses same test inputs as ParseNameIdInstance.
-TEST(ParseSourceTargetSubject, NpcInvalid) {
-    auto sts = lph.parse_source_target_subject("");
+TEST(ParseSourceTargetActor, NpcInvalid) {
+    auto sts = lph.parse_source_target_actor("");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("{1}");
+    sts = lph.parse_source_target_actor("{1}");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("{}:");
+    sts = lph.parse_source_target_actor("{}:");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("{1}:");
+    sts = lph.parse_source_target_actor("{1}:");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("{}:1");
+    sts = lph.parse_source_target_actor("{}:1");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("a {} 1");
+    sts = lph.parse_source_target_actor("a {} 1");
     EXPECT_FALSE(sts);
 
-    sts = lph.parse_source_target_subject("a {} 1:");
+    sts = lph.parse_source_target_actor("a {} 1:");
     EXPECT_FALSE(sts);
 }
 
-TEST(ParseSourceTargetSubject, Valid) {
-    auto stso = lph.parse_source_target_subject("@bubba#1234");
+TEST(ParseSourceTargetActor, Valid) {
+    auto stso = lph.parse_source_target_actor("@bubba#1234");
     ASSERT_TRUE(stso);
-    EXPECT_TRUE(std::holds_alternative<LogParserTypes::PcSubject>(*stso));
-    auto pc = std::get<LogParserTypes::PcSubject>(*stso);
+    EXPECT_TRUE(std::holds_alternative<LogParserTypes::PcActor>(*stso));
+    auto pc = std::get<LogParserTypes::PcActor>(*stso);
     EXPECT_EQ(pc.name, "bubba");
     EXPECT_EQ(pc.id, 1234);
 
-    stso = lph.parse_source_target_subject("@#1234");
+    stso = lph.parse_source_target_actor("@#1234");
     ASSERT_TRUE(stso);
-    EXPECT_TRUE(std::holds_alternative<LogParserTypes::PcSubject>(*stso));
-    pc = std::get<LogParserTypes::PcSubject>(*stso);
+    EXPECT_TRUE(std::holds_alternative<LogParserTypes::PcActor>(*stso));
+    pc = std::get<LogParserTypes::PcActor>(*stso);
     EXPECT_EQ(pc.name, "");
     EXPECT_EQ(pc.id, 1234);
 
-    stso = lph.parse_source_target_subject("@UNKNOWN");
+    stso = lph.parse_source_target_actor("@UNKNOWN");
     ASSERT_TRUE(stso);
-    EXPECT_TRUE(std::holds_alternative<LogParserTypes::PcSubject>(*stso));
-    pc = std::get<LogParserTypes::PcSubject>(*stso);
+    EXPECT_TRUE(std::holds_alternative<LogParserTypes::PcActor>(*stso));
+    pc = std::get<LogParserTypes::PcActor>(*stso);
     EXPECT_EQ(pc.name, "UNKNOWN");
     EXPECT_EQ(pc.id, 0);
 
-    stso = lph.parse_source_target_subject("foo {42}:13");
+    stso = lph.parse_source_target_actor("foo {42}:13");
     ASSERT_TRUE(stso);
-    EXPECT_TRUE(std::holds_alternative<LogParserTypes::NpcSubject>(*stso));
-    auto npc = std::get<LogParserTypes::NpcSubject>(*stso);
+    EXPECT_TRUE(std::holds_alternative<LogParserTypes::NpcActor>(*stso));
+    auto npc = std::get<LogParserTypes::NpcActor>(*stso);
     EXPECT_EQ(npc.name_id.name, "foo");
     EXPECT_EQ(npc.name_id.id, 42);
     EXPECT_EQ(npc.instance, 13);
 
-    stso = lph.parse_source_target_subject("@elric of melnibone#19/moonglum {23}:42");
+    stso = lph.parse_source_target_actor("@elric of melnibone#19/moonglum {23}:42");
     ASSERT_TRUE(stso);
-    EXPECT_TRUE(std::holds_alternative<LogParserTypes::CompanionSubject>(*stso));
-    auto comp = std::get<LogParserTypes::CompanionSubject>(*stso);
+    EXPECT_TRUE(std::holds_alternative<LogParserTypes::CompanionActor>(*stso));
+    auto comp = std::get<LogParserTypes::CompanionActor>(*stso);
     EXPECT_EQ(comp.pc.name, "elric of melnibone");
     EXPECT_EQ(comp.pc.id, 19);
     EXPECT_EQ(comp.companion.name_id.name, "moonglum");
     EXPECT_EQ(comp.companion.name_id.id, 23);
     EXPECT_EQ(comp.companion.instance, 42);
 
-    stso = lph.parse_source_target_subject("@UNKNOWN/moonglum {23}:42");
+    stso = lph.parse_source_target_actor("@UNKNOWN/moonglum {23}:42");
     ASSERT_TRUE(stso);
-    EXPECT_TRUE(std::holds_alternative<LogParserTypes::CompanionSubject>(*stso));
-    comp = std::get<LogParserTypes::CompanionSubject>(*stso);
+    EXPECT_TRUE(std::holds_alternative<LogParserTypes::CompanionActor>(*stso));
+    comp = std::get<LogParserTypes::CompanionActor>(*stso);
     EXPECT_EQ(comp.pc.name, "UNKNOWN");
     EXPECT_EQ(comp.pc.id, 0);
     EXPECT_EQ(comp.companion.name_id.name, "moonglum");
@@ -529,7 +532,7 @@ TEST(ParseSourceTargetSubject, Valid) {
 }
 
 TEST(ParseSourceTargetField, Invalid) {
-    // The documentation explicitly states that the 3 subfields (subject, location, and health) are parsed using other
+    // The documentation explicitly states that the 3 subfields (actor, location, and health) are parsed using other
     // functions; therefore, this test will not delve into the format of the individual subfields - if they're present
     // they'll be valid. This just tests if they're present or not, although there are a few tests at the end for the
     // individual formats - just one each.
@@ -585,8 +588,8 @@ TEST(ParseSourceTargetField, Invalid) {
 TEST(ParseSourceTargetField, Valid) {
     auto stfo = lph.parse_source_target_field("@sckyzm#1234/Gus {234}:567|(1.0,2.0,3.0,4.0)|(200/300)");
     ASSERT_TRUE(stfo);
-    ASSERT_TRUE(std::holds_alternative<LogParserTypes::CompanionSubject>(stfo->subject));
-    auto comp = std::get<LogParserTypes::CompanionSubject>(stfo->subject);
+    ASSERT_TRUE(std::holds_alternative<LogParserTypes::CompanionActor>(stfo->actor));
+    auto comp = std::get<LogParserTypes::CompanionActor>(stfo->actor);
     EXPECT_EQ(comp.pc.name, "sckyzm");
     EXPECT_EQ(comp.pc.id, 1234);
     EXPECT_EQ(comp.companion.name_id.name, "Gus");
@@ -614,6 +617,9 @@ TEST(ParseAbilityField, Test) {
     EXPECT_EQ(ability->id, 2345);
 
     ability = lph.parse_ability_field("Rifle Shot {A}");
+    EXPECT_FALSE(ability);
+
+    ability = lph.parse_ability_field("");
     EXPECT_FALSE(ability);
 }
 
@@ -1033,7 +1039,46 @@ TEST(ParseThreatField, ValidThreat) {
 
     to = lph.parse_threat_field("v7.0.0b");
     ASSERT_TRUE(to);
-    ASSERT_TRUE(std::holds_alternative<std::string_view>(*to));
-    auto ver = std::get<std::string_view>(*to);
+    ASSERT_TRUE(std::holds_alternative<std::string>(*to));
+    auto ver = std::get<std::string>(*to);
     EXPECT_EQ(ver, "v7.0.0b");
+}
+
+// TODO - I could use a few more of these.
+TEST(LogParser, parse_line) {
+    LogParser lp;
+
+    Timestamps ts;
+    std::string_view line {"[19:03:09.182] [@Mystic Scriabin#689778209418226|(-0.18,24.30,4.02,179.59)|(1/40729)] [] [] [AreaEntered {836045448953664}: D5-Mantis {137438988857}] (he3001) <v7.0.0b>"};
+    auto pll = lp.parse_line(line, 1, ts);
+    ASSERT_TRUE(pll);
+    EXPECT_EQ(ts.current_log_timestamp(), pll->ts);
+    EXPECT_TRUE(std::holds_alternative<LogParserTypes::PcActor>(pll->source->actor));
+    auto act = std::get<LogParserTypes::PcActor>(pll->source->actor);
+    EXPECT_EQ(act.name, std::string{"Mystic Scriabin"});
+    EXPECT_EQ(act.id, 689778209418226UL);
+    LogParserTypes::Location exp_loc{LogParserTypes::Location::X(-0.18),
+                                     LogParserTypes::Location::Y(24.30),
+                                     LogParserTypes::Location::Z(4.02),
+                                     LogParserTypes::Location::Rot(179.59)};
+    EXPECT_EQ(pll->source->loc, exp_loc);
+    LogParserTypes::Health exph{LogParserTypes::Health::Current(1), LogParserTypes::Health::Total(40729)};
+    EXPECT_EQ(pll->source->health, exph);
+
+    EXPECT_FALSE(pll->target);
+
+    EXPECT_FALSE(pll->ability);
+
+    EXPECT_EQ(pll->action.verb.ref().name, std::string{"AreaEntered"});
+    EXPECT_EQ(pll->action.verb.ref().id, 836045448953664UL);
+    EXPECT_EQ(pll->action.noun.ref().name, std::string{"D5-Mantis"});
+    EXPECT_EQ(pll->action.noun.ref().id, 137438988857);
+    EXPECT_FALSE(pll->action.detail.val());
+
+    EXPECT_TRUE(std::holds_alternative<LogParserTypes::LogInfoValue>(*pll->value));
+    EXPECT_EQ(std::get<LogParserTypes::LogInfoValue>(*pll->value).info, std::string{"he3001"});
+
+    EXPECT_TRUE(pll->threat);
+    EXPECT_TRUE(std::holds_alternative<std::string>(*pll->threat));
+    EXPECT_EQ(std::get<std::string>(*pll->threat), std::string{"v7.0.0b"});
 }

@@ -1,0 +1,16 @@
+# To set the compiler. do this on the first configuration. This is important. g++-13 didn't work.
+
+cmake -DCMAKE_CXX_COMPILER=/usr/bin/g++-14 --preset=dev
+
+# Create the build system from CMakeFiles
+cmake --preset=dev
+
+# Build the source - note, argument order is important. --build must
+# be first.
+cmake --build --preset=dev
+
+# Run the executable. Again, --build must be first
+cmake --build --preset=dev -t run-exe
+
+# Run the tests
+ctest --preset=dev
