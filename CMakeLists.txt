@@ -26,19 +26,18 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(libpqxx)
 
-FetchContent_Declare(
-  gflags
-  GIT_REPOSITORY https://github.com/gflags/gflags.git
-  GIT_TAG v2.2.2
-)
-
-FetchContent_MakeAvailable(gflags)
-
 find_package(
   Boost
   REQUIRED
   COMPONENTS log
 )
+
+find_package(
+  gflags
+  REQUIRED
+)
+
+set(ENABLE_PROFILING "Build with gprof" CACHE BOOL OFF)
 
 # ---- Declare parser library ----
 
@@ -68,15 +67,17 @@ target_compile_features(
   PUBLIC cxx_std_20
 )
 
-target_compile_options(
-  swtor_combat_explorer_lib
-  PRIVATE -pg
-)
+if (ENABLE_PROFILING)
+  target_compile_options(
+    swtor_combat_explorer_lib
+    PRIVATE -pg
+  )
 
-target_link_options(
-  swtor_combat_explorer_lib
-  PRIVATE -pg
-)
+  target_link_options(
+    swtor_combat_explorer_lib
+    PRIVATE -pg
+  )
+endif()
 
 # ---- Declare populator library ----
 
@@ -106,15 +107,17 @@ target_compile_features(
   PUBLIC cxx_std_20
 )
 
-target_compile_options(
-  swtor_combat_populate_db_lib
-  PRIVATE -pg
-)
+if (ENABLE_PROFILING)
+  target_compile_options(
+    swtor_combat_populate_db_lib
+    PRIVATE -pg
+  )
 
-target_link_options(
-  swtor_combat_populate_db_lib
-  PRIVATE -pg
-)
+  target_link_options(
+    swtor_combat_populate_db_lib
+    PRIVATE -pg
+  )
+endif()
 
 # ---- Declare parser executable ----
 
@@ -144,16 +147,17 @@ target_link_libraries(
   Boost::log
 )
 
-target_compile_options(
-  swtor_combat_explorer_exe
-  PRIVATE -pg
-)
+if (ENABLE_PROFILING)
+  target_compile_options(
+    swtor_combat_explorer_exe
+    PRIVATE -pg
+  )
 
-target_link_options(
-  swtor_combat_explorer_exe
-  PRIVATE -pg
-)
-
+  target_link_options(
+    swtor_combat_explorer_exe
+    PRIVATE -pg
+  )
+endif()
 # ---- Declare populator executable ----
 
 # This uses the parser to populate a database.
@@ -188,15 +192,17 @@ target_link_libraries(
   pq
 )
 
-target_compile_options(
-  swtor_combat_populate_db_exe
-  PRIVATE -pg
-)
+if (ENABLE_PROFILING)
+  target_compile_options(
+    swtor_combat_populate_db_exe
+    PRIVATE -pg
+  )
 
-target_link_options(
-  swtor_combat_populate_db_exe
-  PRIVATE -pg
-)
+  target_link_options(
+    swtor_combat_populate_db_exe
+    PRIVATE -pg
+  )
+endif()
 
 # ---- Declare database searcher executable ----
 
