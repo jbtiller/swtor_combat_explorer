@@ -84,19 +84,23 @@ auto LogParser::parse_line(sv line, int line_num, Timestamps& ts_parser) -> std:
     }
     line.remove_prefix(dist_beyond_field_delimiter);
 
-    // ability is always present but can be in 3 forms: empty, name/ID, and empty name with ID. WTF?
+    // ability may not be present but can be in 3 forms: empty, name/ID, and empty name with ID. WTF?
     auto ability_field = m_lph.get_next_field(line, '[', ']', &dist_beyond_field_delimiter);
     if (!ability_field) {
         BLT_LINE(fatal, line_num) << "Unable to extract ability field (#4) from log line. Skipping.";
         return {};
     }
 
-    auto ability = m_lph.parse_name_and_id(*ability_field);
+
+    decltype(m_lph.parse_name_and_id(*ability_field)) ability;
     if (ability_field == "") {
-        BLT_LINE(warning, line_num) << "Ability field is empty. Ignoring and continuing.";
-    } else if (!ability) {
-        BLT_LINE(fatal, line_num) << "Failed to successfully parse ability field.";
-        return {};
+        BLT_LINE(info, line_num) << "Ability field is empty. Ignoring and continuing.";
+    } else {
+        ability = m_lph.parse_name_and_id(*ability_field);
+        if (!ability) {
+            BLT_LINE(fatal, line_num) << "Failed to successfully parse ability field.";
+            return {};
+        }
     }
     line.remove_prefix(dist_beyond_field_delimiter);
 

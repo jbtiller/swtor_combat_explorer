@@ -57,7 +57,6 @@ namespace pqxx {
             assert((end - begin) >= size_buffer(loc));
             auto len = snprintf(begin, size_buffer(loc), "(%.1f,%.1f,%.1f,%.1f)",
                                 loc.x.val(), loc.y.val(), loc.z.val(), loc.rot.val());
-            std::cerr << "string_traits<Location>::to_buf: buf = " << std::quoted(begin) << "\n";
             if (len < 0) {
                 throw conversion_overrun("Overflow buffer for converting Location type");
             }
@@ -139,7 +138,6 @@ namespace pqxx {
             assert((end - begin) >= size_buffer(h));
             auto len = snprintf(begin, size_buffer(h), "(%u,%u)", h.current.val(), h.total.val());
                                 
-            std::cerr << "string_traits<Health>::to_buf: buf = " << std::quoted(begin) << "\n";
             if (len < 0) {
                 throw conversion_overrun("Overflow buffer for converting Health type");
             }
