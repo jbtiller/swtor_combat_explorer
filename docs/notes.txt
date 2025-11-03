@@ -1,6 +1,211 @@
 -*- fil-column: 120; indent-tabs-mode: nil -*-
 
-2025-10-28
+Global to-do:
+
+1) STARTED Start pushing up to GitHub.
+2) Make a container for the build environment.
+3) Add CI/CD via github actions.
+4) STARTED Start using github for doing PRs, etc.
+5) STARTED Analyze gprof results
+6) Performance optimizations, if necessary.
+7) Add another field to Combat that describes the boss. Create table of area/bosses so we can add the boss to the combat when
+   we see them.
+
+2025-11-02
+
+Leftover from yesterday:
+
+Going to do a run with profiling enabled on this log file:
+
+test/logs/combat_2025-04-20_19_52_15_159478.txt
+test/logs/combat_2025-04-20_19_52_15_159478.txt
+
+$ wc -l test/logs/combat_2025-04-20_19_52_15_159478.txt
+336290 test/logs/combat_2025-04-20_19_52_15_159478.txt
+
+$ grep EnterCombat test/logs/combat_2025-04-20_19_52_15_159478.txt | wc -l
+56
+
+$ BL_LEVEL=warning ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate.out
+
+$ wc -l populate.out
+populate.out 336457
+
+swtor_combat_explorer=> select count(*) from event;
+ count  
+--------
+ 336290
+
+Matches perfectly with # of lines in the raw event log. yay.
+
+Why are there more lines in populate.out than rows in the event table?
+
+$ grep -v "Parsing log line" populate.out | wc -l
+167
+
+All I see in these lines are "Did not encounter a double character. Skipping." Hmm.
+
+So, no other errors or warnings. Nice. And this ONLY happens in the "AreaEntered" action that includes the two sentinels
+(he3001) and <v7.0.0b>. Must be the second, since this can be parsed as a double. Let's see. Yeah, not gonna fix
+that. No reason - very simple and occurs infrequently.
+
+Initial timestamp in populate.out:
+
+14:20:54.437478
+
+Final timestamp in populate.out:
+
+15:11:18.752620
+
+About 50m 22s (3022s) for 336290 records. Or, a rough estimate of parsing/population time per event:
+
+0.008s
+
+Ooh, 8ms per event - that's f'ing slow.
+
+swtor_combat_explorer=> select count(*) from event;
+ count  
+--------
+ 336290
+
+Matches perfectly with # of lines in the raw event log. yay.
+
+Here's how we redirect the psql REPL output to a file:
+
+swtor_combat_explorer=> \o populate_events.txt
+swtor_combat_explorer=> select * from event order by ts;
+swtor_combat_explorer=> \o
+
+The "\o file" turns on redirection in the psql REPL and then empty "\o" turns it off. Handy.
+
+Let's rebuild with profiling off and try again.
+
+OK, rebuilt and re-run.
+
+$ BL_LEVEL=warning ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate.out
+
+Interesting question: How many DB transactions do I make? Let's could these up. Huh, I don't see how to do it. :/
+
+OK, some non-profiling results:
+
+First entry timestamp:
+
+15:25:45.962758
+
+Last entry timestamp:
+
+16:17:59.882762
+
+Took about 52m 14s
+
+That makes no sense - it's *slower* than with profiling on. Fuck that.
+
+Oh, well, let's get back to the searching stuff.
+
+OK, got the PCs in combat working. But... I have a problem. The combat is showing just the area name, like "R-4 anomaly"
+and nothing more. I think I need to add some more info to the populator so it shows the boss in the Combat table. Hmm.
+
+So, what would this need?
+
+When we first enter combat, we have the area only but not the boss.
+
+Well, I'd need a list of the names of bosses and then when I encounter the boss during combat, add that boss to the
+combat entry.
+
+So, just make a list of bosses and put that in another database table?
+
+Too much for for now. Make a TODO.
+
+Let's lookat more searches. Issue has info:
+
+    Show all abilities on a per-class basis
+    Given a combat ID and a PC ID, show all the abilities used by that PC in that combat
+    Show all classes
+    Show a count of the number of combats in each area
+
+Getting there. I have these so far:
+
+DEFINE_bool(all_actions,         false, "Show all actions");
+DEFINE_bool(all_action_verbs,    false, "Show just the unique verbs in actions");
+DEFINE_bool(all_class_abilities, false, "Show all abilities per class");
+DEFINE_bool(all_classes,         false, "Show all classes");
+DEFINE_bool(all_combats,         false, "Show all combats");
+DEFINE_bool(pcs_in_combats,      false, "Show all PCs in all combats");
+
+More to do, but that's a start.
+
+I'm not thrilled with gflags. It feels pretty old and unmaintained and clunky. I also really don't like the usage
+format.
+
+2025-11-01
+
+Made a psql script to create the database. Script is makedb.txt. To use:
+
+$ psql -f makedb.txt
+
+(This assumes a bunch of things, like PostgreSQL is installed, you have an account associated with the current user,
+etc. etc.)
+
+Let's try to flesh out the command-line searcher I started last week.
+
+Ooh, created an issue. I love issues. I think I can link the branch to the issue? Not sure how. Oh, you'd create the
+branch, then create a PR for it and then link that PR to the issue. I can also just create the branch from the issue
+page and pull to get it.
+
+That worked well and gives me a consistent naming scheme between the branch and the issue. Good.
+
+Time for lunch.
+
+Going to do a run with profiling enabled on this log file:
+
+test/logs/combat_2025-05-07_19_07_03_273505.txt
+
+$ wc -l test/logs/combat_2025-05-07_19_07_03_273505.txt
+  101798 test/logs/combat_2025-05-07_19_07_03_273505.txt
+
+$ grep EnterCombat test/logs/combat_2025-05-07_19_07_03_273505.txt | wc -l
+19
+
+$ BL_LEVEL=warning ./build/dev/swtor_combat_populate_db test/logs/combat_2025-05-07_19_07_03_273505.txt >& populate.out
+
+
+2025-10-31
+
+Trying to push to github, but no luck. So, github account is "jbtiller". email is jtiller@fastmail.fm.
+
+I didn't have any ssh keys. Created a key, github_jtiller_fastmail_fm_jbtiller_ed25519, and added to github. Still no
+love.
+
+I can test it with ssh via
+
+ssh -T git@github.com -i ~/.ssh/github_jtiller_fastmail_fm_jbtiller_ed25519
+
+which worked. But not connected to git yet.
+
+Can't find anyway on git command line 'push' to specify which key to use.
+
+Added config in ~/.ssh:
+
+Host github.com
+  HostName github.com
+  IdentityFile ~/.ssh/github_jtiller_fastmail_fm_jbtiller_ed25519
+
+Made sure ~/.ssh/config had 600 perms.
+
+Now it's telling me this:
+
+hostkeys_find_by_key_hostfile: hostkeys_foreach failed for /home/jason/.ssh/known_hosts: Permission denied
+The authenticity of host 'github.com (140.82.116.4)' can't be established.
+ED25519 key fingerprint is SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU.
+This key is not known by any other names.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? 
+
+I say "yes" and it w3orks!
+
+TODO: Rebuilt with profiling enabled. Run against some logfiles (copy exact command line here). Then store results in a
+subdirectory. Then we can do some local caching (add_name_and_id, add_action, etc.) and see how things change.
+
+2025-10-30
 
 Added logic to specify how to handle populating logfiles that have already been parsed and pushed into the
 database. That's kind of nice.
