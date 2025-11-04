@@ -1,7 +1,9 @@
 // -*- fil-column: 120; indent-tabs-mode: nil -*-
 
+#include <chrono>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <string>
 
 #include "generator.hpp"
@@ -70,6 +72,11 @@ auto main(int argc, char* argv[]) -> int {
 
         db.mark_fully_parsed();
 
+        std::cout << "Scope: " << measure_add_name_id.m_func_name << "\n"
+                  << "    # calls: " << measure_add_name_id.m_num_calls
+                  << ", total ns of all calls: " << measure_add_name_id.m_total_time_in_func
+                  << ", ns/call: " << measure_add_name_id.m_total_time_in_func / measure_add_name_id.m_num_calls
+                  << "\n";
     }
 
     BLT(info) << "All logfiles processed. Exiting.";

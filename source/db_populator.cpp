@@ -21,6 +21,41 @@
 
 namespace lpt = LogParserTypes;
 
+#include <time.h>
+
+ScopeRuns::ScopeRuns(const std::string& function_name)
+    : m_func_name(function_name) {
+}
+
+auto ScopeRuns::enter() -> void {
+    clock_gettime(CLOCK_MONOTONIC, &m_enter_time);
+}
+
+auto ScopeRuns::exit() -> void {
+    m_num_calls++;
+    timespec exit_time;
+    clock_gettime(CLOCK_MONOTONIC, &exit_time);
+    int64_t sec_diff = exit_time.tv_sec - m_enter_time.tv_sec;
+    int64_t ns_diff = exit_time.tv_nsec - m_enter_time.tv_nsec;
+    int64_t time_in_func = sec_diff * 1000000000 + ns_diff;
+    m_total_time_in_func += time_in_func;
+}
+
+ScopeRuns measure_add_name_id("DbPopulator::add_name_id");
+
+class MeasureScope {
+  public:
+    MeasureScope(std::function<void(void)> on_enter, std::function<void(void)> on_exit)
+        : m_on_exit(on_exit) {
+        on_enter();
+    }
+    ~MeasureScope() {
+        m_on_exit();
+    }
+
+    std::function<void(void)> m_on_exit;
+};
+
 template <typename T>
 auto append_or_null(pqxx::params& params, std::optional<T>& maybe_val) -> void {
     if (maybe_val) {
@@ -101,13 +136,27 @@ auto DbPopulator::mark_fully_parsed(void) -> void {
 
 // A simple but inefficient implementation - see if the name_id is in the database and if not populate it.
 auto DbPopulator::add_name_id(const lpt::NameId& name_id) -> int {
-    auto row_id = m_tx->query01<int>("SELECT id FROM Name WHERE name_id = $1", pqxx::params(name_id.id));
-    if (row_id) {
-        return std::get<0>(*row_id);
+    MeasureScope meas([] () {measure_add_name_id.enter();}, [] () {measure_add_name_id.exit();});
+
+    // Store a reference to the key's mapped value.
+    auto& row_id = m_names[name_id.id];
+    if (row_id != decltype(name_id.id)()) { // operator[] inserts a new key with default initialized value
+        // Name is in cache.
+        return row_id;
+    }
+
+    // name is not in cache. Is it in the database?
+    auto maybe_row_id = m_tx->query01<int>("SELECT id FROM Name WHERE name_id = $1", pqxx::params(name_id.id));
+    if (maybe_row_id) {
+        // Name is in database. Add to cache.
+        row_id = std::get<0>(*maybe_row_id);
+        return row_id;
     }
     
-    return m_tx->query_value<int>("INSERT INTO Name (name_id, name) VALUES ($1, $2) RETURNING id",
-                               pqxx::params(name_id.id, name_id.name));
+    // Name isn't in database. Add to database and cache.
+    row_id = m_tx->query_value<int>("INSERT INTO Name (name_id, name) VALUES ($1, $2) RETURNING id",
+                                    pqxx::params(name_id.id, name_id.name));
+    return row_id;
 }
 
 auto DbPopulator::add_action(DbPopulator::VerbId vid, DbPopulator::NounId nid, DbPopulator::DetailId did) -> int {

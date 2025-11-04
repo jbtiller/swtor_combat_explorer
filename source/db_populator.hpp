@@ -11,11 +11,25 @@
 #include "timestamps.hpp"
 #include "wrapper.hpp"
 
+class ScopeRuns {
+  public:
+    ScopeRuns(const std::string& function_name);
+    auto enter() -> void;
+    auto exit() -> void;
+
+    std::string m_func_name;
+    uint32_t m_num_calls {};
+    timespec m_enter_time;
+    int64_t m_total_time_in_func {};
+};
+
 // Forward references
 namespace pqxx {
     class connection;
     class nontransaction;
 } // namespace pqxx
+
+extern ScopeRuns measure_add_name_id;
 
 class DbPopulator {
   public:
@@ -465,6 +479,8 @@ class DbPopulator {
      * existing logfile with the same name.
      */
     bool m_parsing_finished {false};
+
+    std::map<uint64_t, int> m_names;
 
     // TODO: Probably consider caches for NPC and Companion actors, too. Purely an optimization.
 };
