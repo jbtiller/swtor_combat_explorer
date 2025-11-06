@@ -7,9 +7,477 @@ Global to-do:
 3) Add CI/CD via github actions.
 4) STARTED Start using github for doing PRs, etc.
 5) STARTED Analyze gprof results
-6) Performance optimizations, if necessary.
+6) STARTED Performance optimizations, if necessary.
 7) Add another field to Combat that describes the boss. Create table of area/bosses so we can add the boss to the combat when
    we see them.
+8) Investigate boost program options library - CLI11 might be interesting
+9) Try profiling run with simple cache and simple metrics.
+10) Add tests for correct add_action. Oops.
+11) Is it reasonable to create abstract caching that could be turned on/off?
+
+2025-11-05
+
+What would a cache abstraction look like?  Basically, there are three things that can happen in our typical situation:
+
+1. The key is found in the cache. Return the value.
+2. The key is not found in the cache. Check the database.
+3. The key is found in the database. Return the value.
+4. The key is not found in the database. Add key to database and return value.
+
+Essentially, the abstraction looks like:
+
+1. A way to check the cache.
+2. A way to update the cache.
+3. A way to check the database.
+4. A way to insert into the database.
+
+Kind of like a strategy pattern. The strategy is:
+
+Check if key is in cache.
+If key in cache:
+    Return value
+Check if key in database.
+If key in database:
+    Return value
+Add key to database
+Return value
+
+Stuff to think about.
+
+This is a waste of time. The database is not the important part. Move on.
+
+Fuck the unit tests for the cache. I'm tired.
+
+Template on key, value
+class Cache
+    cache holds map.
+
+Cache add(
+    key
+    check database string
+    params to check database query
+    func to add to database
+) returns V value
+
+cache variable: template type, std::map<K,V>
+key: template type, K key
+ check database: string query and pqxx::params
+func to add to database: lambda that does other adds (name_id, etc.)
+
+2025-11-04
+
+OK, I see these results after caching Name accesses in add_name_id using the first 10,001 log entries:
+
+no caching:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Time taken by DbPopulator constructor: 24
+Scope: DbPopulator::add_name_id
+    # calls: 40013, total ns of all calls: 14866478954, ns/call: 371541
+6.04user 1.58system 0:43.05elapsed 17%CPU (0avgtext+0avgdata 11392maxresident)k
+0inputs+0outputs (0major+611minor)pagefaults 0swaps
+
+w/simple Name caching:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 40013, total ns of all calls: 1047626172, ns/call: 26182
+5.88user 0.88system 0:36.36elapsed 18%CPU (0avgtext+0avgdata 11264maxresident)k
+0inputs+0outputs (0major+613minor)pagefaults 0swaps
+
+add_name_id:
+
+-cache:  26.18 us/call
++cache: 371.54 us/call
+
+Total run timing:
+
+-cache: 36.36m
++cache: 43.05m
+
+Let's add another measurement. Let's measure the amount of time we spend in parsing the event and the amount of time we
+spend populating the database. Let's do 20k rows this time.
+
+OK, added measurements around the parser's parse_line() entrypoint and the populator's populate_from_entry()
+entrypoint. Here's what I see.
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 79888, total ns of all calls: 1316509998, ns/call: 16479
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 4177049579, ns/call: 208852
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 68004610889, ns/call: 3400230
+11.94user 1.94system 1:12.46elapsed 19%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+0outputs (0major+621minor)pagefaults 0swaps
+
+So:
+
+add_name_id:            16.5 us/call
+parse_line:            208.9 us/call
+populate_from_entry: 3,400.2 us/call
+
+Wow.
+
+Where is that time going? More measurements.
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 79888, total ns of all calls: 1362654713, ns/call: 17057
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 103244251, ns/call: 1454144
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 4223278368, ns/call: 211163
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 69845201809, ns/call: 3492260
+12.02user 1.92system 1:14.36elapsed 18%CPU (0avgtext+0avgdata 11392maxresident)k
+0inputs+0outputs (0major+619minor)pagefaults 0swaps
+
+Ooh. add_pc_class is slow. Best thing about it is it doesn't use add_name_id at all. Bad thing is that it's not called
+very often. :/ We can cache that!
+
+Key type will need to be a tuple.
+
+After caching add_pc_class:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 79872, total ns of all calls: 384643390, ns/call: 4815
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 10807023, ns/call: 152211
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 3954876191, ns/call: 197743
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 63577865887, ns/call: 3178893
+11.13user 1.64system 1:07.83elapsed 18%CPU (0avgtext+0avgdata 11136maxresident)k
+0inputs+0outputs (0major+614minor)pagefaults 0swaps
+
+About a 10x speedup. So, we have:
+
+add_pc_class:
+  -caching: 1,454.14us/call
+  +caching: 142.2us/call
+
+total:
+  -caching: 1:14.36
+  +caching: 1:07.83
+
+But... I need a bigger fish to fry.
+
+Ah, add_action!
+
+Let's profile add_action first. Before caching add_action:
+
+How weird. I got a crash. Signal 8 - floating point error?? Oh, sum probably got too large. Don't print the average and
+see what happens.
+
+Oh, no, oops. There are 2 add_actions and I instrumented the one that's never called. Oops. Fixt hat!
+
+OK, here's what we get without caching on add_action
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 79888, total ns of all calls: 1429530198, ns/call: 17894
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 28984957, ns/call: 408238
+Scope: DbPopulator::add_action
+    # calls: 20000, total ns of all calls: 14837079234, ns/call: 741853
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 4187727149, ns/call: 209386
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 69275981237, ns/call: 3463799
+12.07user 1.90system 1:13.73elapsed 18%CPU (0avgtext+0avgdata 11392maxresident)k
+0inputs+0outputs (0major+612minor)pagefaults 0swaps
+
+So, 741.85 us/call. Now, with caching. Added caching to add_action. And here we go!
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 40865, total ns of all calls: 1455509265, ns/call: 35617
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 32467426, ns/call: 457287
+Scope: DbPopulator::add_action
+    # calls: 20000, total ns of all calls: 2046636890, ns/call: 102331
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 5183463599, ns/call: 259173
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 64978259834, ns/call: 3248912
+12.72user 1.65system 1:10.50elapsed 20%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+0outputs (0major+625minor)pagefaults 0swaps
+
+Results:
+
+add_action:
+  -caching: 741.9us/call
+  +caching: 102.3us/call
+
+total:
+  -caching: 1:13.73
+  +caching: 1:10.50
+
+Eh, definitely diminishing returns. The timing seems odd. Consider:
+
+Total parsing: 5.183463599s
+Total populating: 64.978259834s
+
+So, almost all the time is taken up in populating, as is to be expected.
+
+Of the functions I've "profiled" so far, I see (with caching):
+
+add_name_id total: 1.455509265s
+add_pc_class total: .324674260s
+add_action total:  2.046636890s
+
+These are very low numbers. Where is all the time coming from?
+
+Actors are painfully slow, too. How about them.
+
+Without caching, I see these measurements:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 40865, total ns of all calls: 1491644982, ns/call: 36501
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 29181147, ns/call: 411002
+Scope: DbPopulator::add_action
+    # calls: 20000, total ns of all calls: 2024325477, ns/call: 101216
+Scope: DbPopulator::add_pc_actor
+    # calls: 28095, total ns of all calls: 263111719, ns/call: 9365
+Scope: DbPopulator::add_npc_actor
+    # calls: 11621, total ns of all calls: 9064179454, ns/call: 779982
+Scope: DbPopulator::companion_actor
+    # calls: 21, total ns of all calls: 24001785, ns/call: 1142942
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 5159563056, ns/call: 257978
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 64406116729, ns/call: 3220305
+12.60user 1.54system 1:09.89elapsed 20%CPU (0avgtext+0avgdata 11264maxresident)k
+0inputs+0outputs (0major+624minor)pagefaults 0swaps
+
+Wow, these are interesting
+
+add_pc_actor:  0.263111719s total
+add_npc_actor: 9.064179454s total, 780us per call
+
+This kinda makes sense - add_pc_actor is mostly concernted the actor's class (cached) and name/id (cached).
+
+Let's try npc actor. That will again need two items in the key tuple - name, instance. Hmm.
+
+OK, results from caching the add_npc_actor:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 29310, total ns of all calls: 1513360733, ns/call: 51632
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 30869847, ns/call: 434786
+Scope: DbPopulator::add_action
+    # calls: 20000, total ns of all calls: 2197425464, ns/call: 109871
+Scope: DbPopulator::add_pc_actor
+    # calls: 28095, total ns of all calls: 243731566, ns/call: 8675
+Scope: DbPopulator::add_npc_actor
+    # calls: 11621, total ns of all calls: 309915206, ns/call: 26668
+Scope: DbPopulator::companion_actor
+    # calls: 21, total ns of all calls: 29489017, ns/call: 1404238
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 5675293912, ns/call: 283764
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 59263380004, ns/call: 2963169
+12.27user 1.30system 1:05.32elapsed 20%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+0outputs (0major+628minor)pagefaults 0swaps
+
+add_npc_actor:
+  -cache: 9.064179454s total, 780us per call
+  +cache: 0.309915206s total: 26.7us/call
+
+Another nice improvement, although I don't entirely understand the final number:
+
+total:
+  -add_npc_actor cache: 1:09.89
+  +add_npc_actor cache: 1:05.32
+
+populate_from_entry:
+  -cache: 64.406116729s, 3.220305 ms/call
+  +cache: 59.263380004s, 2.963169 ms/call
+
+None of the other actors are worth caching - add_pc_actor is already cached and add_companion_actor is only called 21
+times. How often do you have your comps out in raids? never.
+
+That may be it for our caching improvements. They were worthwhile. Let's commit these and try a test of the measurements
+without the caching.
+
+Later - gotta practice.
+
+2025-11-03
+
+OK, created a ticket for doing some performance profiling. Let's build with profiling on:
+
+$ ccmake build/dev
+
+Turn ENABLE_PROFILING ON
+
+Then 'c' to configure and 'g' to generate.
+
+$ cmake --build --prest=dev
+
+Here's where we are:
+
+c775b8b (HEAD -> 3-explore-local-caching-to-speed-up-population, ...)
+
+To detect that an executable has been built against gprof, the internet recommends searching the symbols for
+'mcount'. Here's what I see:
+
+$ readelf -sWC build/dev/swtor_combat_populate_db | grep mcount
+   121: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND mcount@GLIBC_2.2.5 (5)
+  4263: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND mcount@GLIBC_2.2.5
+
+-s: Show symbols
+-W: Allow the output to exeed 80 characters
+-C: Demangle symbols
+
+So, yes, we did link in profiling.
+
+Let's do a fresh run.
+
+$ psql -f makedb.txt
+
+$ ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate_profiling_on_c775b8b.txt
+
+Oh, CRAP. Didn't change the log level, so it's taking a looooong time.
+
+Let's turn off logging entirely:
+
+$ BL_LEVEL=fatal ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate_profiling_on_c775b8b.txt
+
+OK, it's going. Wait, I want to time the run externally.
+
+$ psql -f makedb.txt
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate_profiling_on_c775b8b.txt
+
+$ cat populate_profiling_on_c775b8b.txt
+675.88user 75.89system 48:43.76elapsed 25%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+1112outputs (0major+951minor)pagefaults 0swaps
+
+$ ls -l gmon.out 
+-rw-rw-r-- 1 jason jason 567076 Nov  3 14:41 gmon.out
+
+$ cd profiling
+ ls -lart
+total 568
+-rw-rw-r--  1 jason jason 567076 Nov  3 14:41 gmon_c775b8b.out
+-rw-rw-r--  1 jason jason    139 Nov  3 14:41 populate_profiling_on_c775b8b.txt
+
+Generate a gprof analysis:
+
+$ gprof ../build/dev/swtor_combat_populate_db gmon_c775b8b.out > gprof_analysis_c775b8b.txt
+
+Let's look at the analysis:
+
+Each sample counts as 0.01 seconds.
+  %   cumulative   self              self     total           
+ time   seconds   seconds    calls  ms/call  ms/call  name 
+...
+  0.92     12.40     1.42 114339665    0.00     0.00  std::__cxx11::basic_string<
+...
+  0.58     17.34     0.89                             pqxx::connection::exec_params
+...
+  0.41     24.68     0.62 128647510    0.00     0.00  auto LogParserHelpers::get_next_field
+...
+  0.13     84.58     0.20  1308899     0.00     0.01  DbPopulator::add_name_id(LogParserTypes::NameId const&)
+
+Most calls: get_next_field 12 million times. Holy crap. Took up 0.4%
+
+'time' said it toopk 48:43.76s for the entire run.
+
+Let's look at the gprof2dot analysis:
+
+$ gprof build/dev/swtor_combat_populate_db gmon.out | gprof2dot --strip | dot -Tpng -o gprof.png
+
+Some interesting takeaways from the dependency graph:
+
+1. pqxx query01 takes 4.89% of the time.
+2. The DbPopulator constructor took 9.25% of the time? What??
+3. _fini (shutdown) took 9% of the time? These numbers can't be right.
+
+I don't understand that - almost nothing in the populators. Most of them aren't even listed.
+
+Dammit, something's not right. Fuck this. Gonna add my own shitty profiler.
+
+OK, added class that captures time on entry and exit from a function. Then output in the top-level populator and I see this:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Time taken by DbPopulator constructor: 24
+Scope: DbPopulator::add_name_id
+    # calls: 40013, total ns of all calls: 14866478954, ns/call: 371541
+6.04user 1.58system 0:43.05elapsed 17%CPU (0avgtext+0avgdata 11392maxresident)k
+0inputs+0outputs (0major+611minor)pagefaults 0swaps
+
+Oh, I limited the number of line we process to 10k to make my life easier.
+
+Geez, really, 371ms per call? We can do better than that, I bet. First, a cheesy implementation.
+
+Note that the sum of all calls is 14.87s, or about a 4th of the entire time. Is that right?
+
+OK, let's rebuild without profiling and see how we do.
+
+$ ccmake build/dev
+c then e then g
+
+$ cmake --build --preset=dev && ctest --preset=dev
+
+$ readelf -sWC build/dev/swtor_combat_populate_db | grep mcount | wc -l
+0
+
+No profiling
+
+$ psql -f makedb.txt
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate_profiling_off_c775b8b.txt
+
+$ psql -d swtor_combat_explorer -c 'select count(*) from event;'
+ count  
+--------
+ 145986
+(1 row)
+
+Done.
+
+cat populate_profiling_off_c775b8b.txt
+304.42user 76.11system 42:11.12elapsed 15%CPU (0avgtext+0avgdata 11392maxresident)k
+0inputs+0outputs (0major+609minor)pagefaults 0swaps
+
+Hmm, 6 minutes faster.
+
+Added some caching. Just a simple std::map that maps name UUIDs to Name row IDs. Let's see how this does.
+
+First a run without profiling but with my dumb measurement in place.
+
+$ psql -f makedb.txt
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 40013, total ns of all calls: 1047626172, ns/call: 26182
+5.88user 0.88system 0:36.36elapsed 18%CPU (0avgtext+0avgdata 11264maxresident)k
+0inputs+0outputs (0major+613minor)pagefaults 0swaps
+
+Yes, we just reduced the time by a factor of more than 10x. That's a win. :)
+
+10001 events...
+
+275 events per second. That's a helluva lot better!!
+
+There are around 4 add_name_id() calls per event row. That's quite nice.
+
+Let's take off the 10,000 record limiter and do the entire file. Here we go! Should take around 1,221 seconds, or 20 minutes.
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Time taken by DbPopulator constructor: 8ms
+Scope: DbPopulator::add_name_id
+    # calls: 1308899, total ns of all calls: 9634986575, ns/call: 7361
+288.71user 48.40system 36:57.44elapsed 15%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+0outputs (0major+630minor)pagefaults 0swaps
+
+Took off about 5 minutes, or around 1/9 (11.1%) of the total runtime. That's not bad. But not great. How can I do better?
 
 2025-11-02
 
@@ -17,7 +485,6 @@ Leftover from yesterday:
 
 Going to do a run with profiling enabled on this log file:
 
-test/logs/combat_2025-04-20_19_52_15_159478.txt
 test/logs/combat_2025-04-20_19_52_15_159478.txt
 
 $ wc -l test/logs/combat_2025-04-20_19_52_15_159478.txt
@@ -135,7 +602,7 @@ DEFINE_bool(pcs_in_combats,      false, "Show all PCs in all combats");
 More to do, but that's a start.
 
 I'm not thrilled with gflags. It feels pretty old and unmaintained and clunky. I also really don't like the usage
-format.
+format. What's boost::options up to?
 
 2025-11-01
 

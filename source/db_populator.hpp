@@ -11,11 +11,30 @@
 #include "timestamps.hpp"
 #include "wrapper.hpp"
 
+class ScopeRuns {
+  public:
+    ScopeRuns(const std::string& function_name);
+    auto enter() -> void;
+    auto exit() -> void;
+
+    std::string m_func_name;
+    uint32_t m_num_calls {};
+    timespec m_enter_time;
+    int64_t m_total_time_in_func {};
+};
+
 // Forward references
 namespace pqxx {
     class connection;
     class nontransaction;
 } // namespace pqxx
+
+extern ScopeRuns measure_add_name_id;
+extern ScopeRuns measure_add_pc_class;
+extern ScopeRuns measure_add_action;
+extern ScopeRuns measure_add_pc_actor;
+extern ScopeRuns measure_add_npc_actor;
+extern ScopeRuns measure_add_companion_actor;
 
 class DbPopulator {
   public:
@@ -157,19 +176,6 @@ class DbPopulator {
     // TODO: Check stuff in and upload to github.
     // TODO: Add cache for Name and Action and check to see how performance changes.
     auto add_name_id(const LogParserTypes::NameId& name_id) -> int;
-
-    /**
-     * Add action to the database
-     *
-     * An action has three components, verb & noun, which are required, and detail, which may not be present. These
-     * all reference names/ids stored in the database.
-     *
-     * @param[in] vid Identifier of verb name/id
-     * @param[in] nid Identifier of noun name/id
-     * @param[in] did Optional identifier of detail name/id
-     * @returns The identifier of the row in the action table that holds the noun, verb, detail values
-     */
-    auto add_action(VerbId vid, NounId nid, DetailId did) -> int;
 
     /**
      * Add an actor to the database
@@ -466,5 +472,11 @@ class DbPopulator {
      */
     bool m_parsing_finished {false};
 
-    // TODO: Probably consider caches for NPC and Companion actors, too. Purely an optimization.
+    std::map<uint64_t, int> m_names;
+
+    std::map<std::tuple<uint64_t,uint64_t>, int> m_classes;
+
+    std::map<std::tuple<uint64_t,uint64_t,uint64_t>, int> m_actions;
+
+    std::map<std::tuple<uint64_t,uint64_t>, int> m_npcs;
 };

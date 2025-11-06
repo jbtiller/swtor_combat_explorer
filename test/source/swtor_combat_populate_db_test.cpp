@@ -4,7 +4,6 @@
 #include <memory>
 #include <string>
 #include <log_parser_types.hpp>
-#include "timestamps.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wall"
@@ -14,6 +13,8 @@
 
 #include "db_populator.hpp"
 #include "db_custom_types.hpp"
+#include "local_db_cache.hpp"
+#include "timestamps.hpp"
 
 class TestDbPopulator : public DbPopulator {
   public:
@@ -30,10 +31,6 @@ class TestDbPopulator : public DbPopulator {
 
     auto add_name_id(const LogParserTypes::NameId& name_id) -> int {
         return DbPopulator::add_name_id(name_id);
-    }
-
-    auto add_action(VerbId verb, NounId noun, DetailId detail) -> int {
-        return DbPopulator::add_action(verb, noun, detail);
     }
 
     auto add_actor(LogParserTypes::Actor& actor) -> int {
@@ -501,59 +498,6 @@ TEST_F(DbPopTestFix, add_name_id) {
     EXPECT_NO_THROW(res.one_row());
     EXPECT_EQ(res[0][0].as<uint64_t>(), name_id.id);
     EXPECT_EQ(res[0][1].as<std::string>(), name_id.name);
-}
-
-TEST_F(DbPopTestFix, add_action) {
-    struct name_row {
-        int id;
-        LogParserTypes::NameId name_id;
-    };
-
-    // 0s are placeholders.
-    name_row verb   {0, {.name = "Strike", .id = 1234}};
-    name_row noun   {0, {.name = "Slash", .id = 2345}};
-    name_row detail {0, {.name = "Parry", .id = 3456}};
-
-    verb.id = m_dbp->add_name_id(verb.name_id);
-    noun.id = m_dbp->add_name_id(noun.name_id);
-    detail.id = m_dbp->add_name_id(detail.name_id);
-
-    int id = m_dbp->add_action(TestDbPopulator::VerbId(verb.id),
-                               TestDbPopulator::NounId(noun.id),
-                               TestDbPopulator::DetailId(detail.id));
-
-    // Ensure the right values were stored.
-    auto [rvid, rnid, rdid] = m_tx->query1<int, int, int>("SELECT verb, noun, detail FROM Action \
-                                                               WHERE id = $1", pqxx::params(id));
-    EXPECT_EQ(verb.id, rvid);
-    EXPECT_EQ(noun.id, rnid);
-    EXPECT_EQ(detail.id, rdid);
-
-    // Call again and ensure the row ID didn't change.
-    int id2 = m_dbp->add_action(TestDbPopulator::VerbId(verb.id),
-                                TestDbPopulator::NounId(noun.id),
-                                TestDbPopulator::DetailId(detail.id));
-
-    EXPECT_EQ(id2, id);
-
-    auto [rvid2, rnid2, rdid2] = m_tx->query1<int, int, int>("SELECT verb, noun, detail FROM Action \
-                                                                  WHERE id = $1", pqxx::params(id));
-    EXPECT_EQ(rvid, rvid2);
-    EXPECT_EQ(rnid, rnid2);
-    EXPECT_EQ(rdid, rdid2);
-    
-    // Now with an empty ("not applicable") detail.
-    int id3 = m_dbp->add_action(TestDbPopulator::VerbId(verb.id),
-                                TestDbPopulator::NounId(noun.id),
-                                TestDbPopulator::DetailId(std::optional<int>()));
-    EXPECT_NE(id3, id);
-
-    auto na_did = TestDbPopulator::DetailId(TestDbPopulator::NOT_APPLICABLE_ROW_ID);
-    auto nres= m_tx->exec("SELECT verb, noun, detail FROM Action WHERE id = $1", pqxx::params(id3));
-    auto nrow = nres.one_row();
-    EXPECT_EQ(verb.id, nrow.at(0).as<int>());
-    EXPECT_EQ(noun.id, nrow.at(1).as<int>());
-    EXPECT_EQ(na_did.val(), nrow.at(2).as<int>());
 }
 
 TEST_F(DbPopTestFix, add_npc_actor) {
@@ -1585,4 +1529,3 @@ TEST_F(DbPopTestFix, mark_fully_parsed) {
     auto new_fully_parsed = get_fp();
     EXPECT_TRUE(new_fully_parsed);
 }
-

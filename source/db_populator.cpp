@@ -21,6 +21,46 @@
 
 namespace lpt = LogParserTypes;
 
+#include <time.h>
+
+ScopeRuns::ScopeRuns(const std::string& function_name)
+    : m_func_name(function_name) {
+}
+
+auto ScopeRuns::enter() -> void {
+    clock_gettime(CLOCK_MONOTONIC, &m_enter_time);
+}
+
+auto ScopeRuns::exit() -> void {
+    m_num_calls++;
+    timespec exit_time;
+    clock_gettime(CLOCK_MONOTONIC, &exit_time);
+    int64_t sec_diff = exit_time.tv_sec - m_enter_time.tv_sec;
+    int64_t ns_diff = exit_time.tv_nsec - m_enter_time.tv_nsec;
+    int64_t time_in_func = sec_diff * 1000000000 + ns_diff;
+    m_total_time_in_func += time_in_func;
+}
+
+ScopeRuns measure_add_name_id("DbPopulator::add_name_id");
+ScopeRuns measure_add_pc_class("DbPopulator::add_pc_class");
+ScopeRuns measure_add_action("DbPopulator::add_action");
+ScopeRuns measure_add_pc_actor("DbPopulator::add_pc_actor");
+ScopeRuns measure_add_npc_actor("DbPopulator::add_npc_actor");
+ScopeRuns measure_add_companion_actor("DbPopulator::add_companion_actor");
+
+class MeasureScope {
+  public:
+    MeasureScope(ScopeRuns& sr)
+        : m_sr(sr) {
+        m_sr.enter();
+    }
+    ~MeasureScope() {
+        m_sr.exit();
+    }
+
+    ScopeRuns& m_sr;
+};
+
 template <typename T>
 auto append_or_null(pqxx::params& params, std::optional<T>& maybe_val) -> void {
     if (maybe_val) {
@@ -101,54 +141,75 @@ auto DbPopulator::mark_fully_parsed(void) -> void {
 
 // A simple but inefficient implementation - see if the name_id is in the database and if not populate it.
 auto DbPopulator::add_name_id(const lpt::NameId& name_id) -> int {
-    auto row_id = m_tx->query01<int>("SELECT id FROM Name WHERE name_id = $1", pqxx::params(name_id.id));
-    if (row_id) {
-        return std::get<0>(*row_id);
+    MeasureScope meas(measure_add_name_id);
+
+    // Store a reference to the key's mapped value.
+    auto& row_id = m_names[name_id.id];
+    if (row_id != int{}) { // operator[] inserts a new key with default initialized value
+        // Name is in cache.
+        return row_id;
+    }
+
+    // name is not in cache. Is it in the database?
+    auto maybe_row_id = m_tx->query01<int>("SELECT id FROM Name WHERE name_id = $1", pqxx::params(name_id.id));
+    if (maybe_row_id) {
+        // Name is in database. Add to cache.
+        row_id = std::get<0>(*maybe_row_id);
+        return row_id;
     }
     
-    return m_tx->query_value<int>("INSERT INTO Name (name_id, name) VALUES ($1, $2) RETURNING id",
-                               pqxx::params(name_id.id, name_id.name));
-}
-
-auto DbPopulator::add_action(DbPopulator::VerbId vid, DbPopulator::NounId nid, DbPopulator::DetailId did) -> int {
-    pqxx::params params {/*1*/vid.val(), /*2*/nid.val(), /*3*/did.cref().value_or(NOT_APPLICABLE_ROW_ID)};
-
-    auto row_id = m_tx->query01<int>("SELECT id FROM Action WHERE (verb, noun, detail) = ($1, $2, $3)", params);
-    if (row_id) {
-        return std::get<0>(*row_id);
-    } 
-    auto res = m_tx->exec("INSERT INTO Action (verb, noun, detail) VALUES ($1, $2, $3) RETURNING id", params);
-    return res[0][0].as<int>();
+    // Name isn't in database. Add to database and cache.
+    row_id = m_tx->query_value<int>("INSERT INTO Name (name_id, name) VALUES ($1, $2) RETURNING id",
+                                    pqxx::params(name_id.id, name_id.name));
+    return row_id;
 }
 
 auto DbPopulator::add_pc_class(const DbPopulator::PcClass& pc_class) -> int {
+    MeasureScope meas(measure_add_pc_class);
+
     BLT(info) << "add_pc_class: style.name=" << std::quoted(pc_class.style.cref().name)
               << ", advanced_class.name=" << std::quoted(pc_class.advanced_class.cref().name);
+
+    auto key = std::tuple<uint64_t,uint64_t>(pc_class.style.val().id, pc_class.advanced_class.val().id);
+    auto& row_id = m_classes[key];
+    if (row_id != int{}) {
+        return row_id;
+    }
     pqxx::params params {/*1*/pc_class.style.val().id, /*2*/pc_class.advanced_class.val().id};
     auto cid = m_tx->query01<int>("SELECT Advanced_Class.id FROM Advanced_Class \
                                     JOIN Name AS n1 ON Advanced_Class.style = n1.id \
                                     JOIN Name AS n2 ON Advanced_Class.class = n2.id \
                                     WHERE (n1.name_id, n2.name_id) = ($1, $2)", params);
     if (cid) {
-        return std::get<0>(*cid);
+        row_id = std::get<0>(*cid);
+        return row_id;
     }
 
     auto style_id = add_name_id(pc_class.style.val());
     auto advanced_class_id = add_name_id(pc_class.advanced_class.val());
-    pqxx::result res = m_tx->exec("INSERT INTO Advanced_Class (style, class) VALUES ($1, $2) RETURNING id",
-                                  pqxx::params{style_id, advanced_class_id});
-    return res[0][0].as<int>();
+    row_id = m_tx->query_value<int>("INSERT INTO Advanced_Class (style, class) VALUES ($1, $2) RETURNING id",
+                                              pqxx::params{style_id, advanced_class_id});
+    return row_id;
 }
 
 auto DbPopulator::add_npc_actor(const lpt::NpcActor& npc_actor) -> int {
+    MeasureScope meas(measure_add_npc_actor);
+    auto key = std::tuple<uint64_t, uint64_t>(npc_actor.name_id.id, npc_actor.instance);
+    auto& row_id = m_npcs[key];
+    if (row_id != int{}) {
+        return row_id;
+    }
+
     auto npc_name_id = add_name_id(npc_actor.name_id);
 
     pqxx::params params {/*1*/"npc", /*2*/npc_name_id, /*3*/npc_actor.instance};
     auto o_row_id = m_tx->query01<int>("SELECT id FROM Actor WHERE (type, name, instance) = ($1, $2, $3)", params);
     if (o_row_id) {
-        return std::get<0>(*o_row_id);
+        row_id = std::get<0>(*o_row_id);
+        return row_id;
     }
-    return m_tx->query_value<int>("INSERT INTO Actor (type, name, instance) VALUES ($1, $2, $3) RETURNING id", params);
+    row_id = m_tx->query_value<int>("INSERT INTO Actor (type, name, instance) VALUES ($1, $2, $3) RETURNING id", params);
+    return row_id;
 }
 
 // Possible state on entry:
@@ -165,6 +226,7 @@ auto DbPopulator::add_npc_actor(const lpt::NpcActor& npc_actor) -> int {
 // 1. m_pcs has an entry that relates the pc_actor's name_id to both an PC Actor row matching the pc_actor's name_id and
 //    the advanced class ID in the Actor row.
 auto DbPopulator::add_pc_actor(const lpt::PcActor& pc_actor) -> int {
+    MeasureScope meas(measure_add_pc_actor);
     BLT(info) << "add_pc_actor: pc_actor name.id = " << pc_actor.id;
 
     if (m_pcs.contains(pc_actor.id)) {
@@ -196,6 +258,7 @@ auto DbPopulator::add_pc_actor(const lpt::PcActor& pc_actor) -> int {
 }
 
 auto DbPopulator::add_companion_actor(const lpt::CompanionActor& comp_actor) -> int {
+    MeasureScope meas(measure_add_companion_actor);
     auto comp_name_row_id = add_name_id(comp_actor.companion.name_id);
     auto pc_actor_row_id = add_pc_actor(comp_actor.pc);
     BLT(info) << "add_companion_actor: comp_name_row_id = " << comp_name_row_id
@@ -270,6 +333,14 @@ auto DbPopulator::add_class_to_pc_actor(const lpt::PcActor& pc_actor, const DbPo
 }
 
 auto DbPopulator::add_action(const lpt::Action& action) -> int {
+    MeasureScope meas(measure_add_action);
+    auto key = std::tuple<uint64_t, uint64_t, uint64_t>(action.verb.cref().id,
+                                                        action.noun.cref().id,
+                                                        action.detail.cref() ? action.detail.cref()->id : NOT_APPLICABLE_ROW_ID);
+    auto& row_id = m_actions[key];
+    if (row_id != int{}) {
+        return row_id;
+    }
     auto verb_row_id = add_name_id(action.verb);
     auto noun_row_id = add_name_id(action.noun);
     auto detail_row_id = action.detail.cref() ? add_name_id(*action.detail.cref()) : NOT_APPLICABLE_ROW_ID;
@@ -277,10 +348,12 @@ auto DbPopulator::add_action(const lpt::Action& action) -> int {
 
     auto maybe_action = m_tx->query01<int>("SELECT id FROM Action WHERE (verb, noun, detail) = ($1, $2, $3)", params);
     if (maybe_action) {
-        return std::get<0>(*maybe_action);
+        row_id = std::get<0>(*maybe_action);
+        return row_id;
     }
 
-    return m_tx->query_value<int>("INSERT INTO Action (verb, noun, detail) VALUES ($1, $2, $3) RETURNING id", params);
+    row_id = m_tx->query_value<int>("INSERT INTO Action (verb, noun, detail) VALUES ($1, $2, $3) RETURNING id", params);
+    return row_id;
 }
 
 auto DbPopulator::add_actor(const lpt::Actor& actor) -> int {
