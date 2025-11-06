@@ -12,6 +12,57 @@ Global to-do:
    we see them.
 8) Investigate boost program options library - CLI11 might be interesting
 9) Try profiling run with simple cache and simple metrics.
+10) Add tests for correct add_action. Oops.
+11) Is it reasonable to create abstract caching that could be turned on/off?
+
+2025-11-05
+
+What would a cache abstraction look like?  Basically, there are three things that can happen in our typical situation:
+
+1. The key is found in the cache. Return the value.
+2. The key is not found in the cache. Check the database.
+3. The key is found in the database. Return the value.
+4. The key is not found in the database. Add key to database and return value.
+
+Essentially, the abstraction looks like:
+
+1. A way to check the cache.
+2. A way to update the cache.
+3. A way to check the database.
+4. A way to insert into the database.
+
+Kind of like a strategy pattern. The strategy is:
+
+Check if key is in cache.
+If key in cache:
+    Return value
+Check if key in database.
+If key in database:
+    Return value
+Add key to database
+Return value
+
+Stuff to think about.
+
+This is a waste of time. The database is not the important part. Move on.
+
+Fuck the unit tests for the cache. I'm tired.
+
+Template on key, value
+class Cache
+    cache holds map.
+
+Cache add(
+    key
+    check database string
+    params to check database query
+    func to add to database
+) returns V value
+
+cache variable: template type, std::map<K,V>
+key: template type, K key
+ check database: string query and pqxx::params
+func to add to database: lambda that does other adds (name_id, etc.)
 
 2025-11-04
 
@@ -36,19 +87,225 @@ Scope: DbPopulator::add_name_id
 
 add_name_id:
 
-+prof: 371.54 ms/call
--prof:  26.18 ms/call
+-cache:  26.18 us/call
++cache: 371.54 us/call
 
 Total run timing:
 
-+prof: 43.05m
--prof: 36.36m
+-cache: 36.36m
++cache: 43.05m
 
 Let's add another measurement. Let's measure the amount of time we spend in parsing the event and the amount of time we
 spend populating the database. Let's do 20k rows this time.
 
+OK, added measurements around the parser's parse_line() entrypoint and the populator's populate_from_entry()
+entrypoint. Here's what I see.
 
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 79888, total ns of all calls: 1316509998, ns/call: 16479
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 4177049579, ns/call: 208852
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 68004610889, ns/call: 3400230
+11.94user 1.94system 1:12.46elapsed 19%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+0outputs (0major+621minor)pagefaults 0swaps
 
+So:
+
+add_name_id:            16.5 us/call
+parse_line:            208.9 us/call
+populate_from_entry: 3,400.2 us/call
+
+Wow.
+
+Where is that time going? More measurements.
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 79888, total ns of all calls: 1362654713, ns/call: 17057
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 103244251, ns/call: 1454144
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 4223278368, ns/call: 211163
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 69845201809, ns/call: 3492260
+12.02user 1.92system 1:14.36elapsed 18%CPU (0avgtext+0avgdata 11392maxresident)k
+0inputs+0outputs (0major+619minor)pagefaults 0swaps
+
+Ooh. add_pc_class is slow. Best thing about it is it doesn't use add_name_id at all. Bad thing is that it's not called
+very often. :/ We can cache that!
+
+Key type will need to be a tuple.
+
+After caching add_pc_class:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 79872, total ns of all calls: 384643390, ns/call: 4815
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 10807023, ns/call: 152211
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 3954876191, ns/call: 197743
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 63577865887, ns/call: 3178893
+11.13user 1.64system 1:07.83elapsed 18%CPU (0avgtext+0avgdata 11136maxresident)k
+0inputs+0outputs (0major+614minor)pagefaults 0swaps
+
+About a 10x speedup. So, we have:
+
+add_pc_class:
+  -caching: 1,454.14us/call
+  +caching: 142.2us/call
+
+total:
+  -caching: 1:14.36
+  +caching: 1:07.83
+
+But... I need a bigger fish to fry.
+
+Ah, add_action!
+
+Let's profile add_action first. Before caching add_action:
+
+How weird. I got a crash. Signal 8 - floating point error?? Oh, sum probably got too large. Don't print the average and
+see what happens.
+
+Oh, no, oops. There are 2 add_actions and I instrumented the one that's never called. Oops. Fixt hat!
+
+OK, here's what we get without caching on add_action
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 79888, total ns of all calls: 1429530198, ns/call: 17894
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 28984957, ns/call: 408238
+Scope: DbPopulator::add_action
+    # calls: 20000, total ns of all calls: 14837079234, ns/call: 741853
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 4187727149, ns/call: 209386
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 69275981237, ns/call: 3463799
+12.07user 1.90system 1:13.73elapsed 18%CPU (0avgtext+0avgdata 11392maxresident)k
+0inputs+0outputs (0major+612minor)pagefaults 0swaps
+
+So, 741.85 us/call. Now, with caching. Added caching to add_action. And here we go!
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 40865, total ns of all calls: 1455509265, ns/call: 35617
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 32467426, ns/call: 457287
+Scope: DbPopulator::add_action
+    # calls: 20000, total ns of all calls: 2046636890, ns/call: 102331
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 5183463599, ns/call: 259173
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 64978259834, ns/call: 3248912
+12.72user 1.65system 1:10.50elapsed 20%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+0outputs (0major+625minor)pagefaults 0swaps
+
+Results:
+
+add_action:
+  -caching: 741.9us/call
+  +caching: 102.3us/call
+
+total:
+  -caching: 1:13.73
+  +caching: 1:10.50
+
+Eh, definitely diminishing returns. The timing seems odd. Consider:
+
+Total parsing: 5.183463599s
+Total populating: 64.978259834s
+
+So, almost all the time is taken up in populating, as is to be expected.
+
+Of the functions I've "profiled" so far, I see (with caching):
+
+add_name_id total: 1.455509265s
+add_pc_class total: .324674260s
+add_action total:  2.046636890s
+
+These are very low numbers. Where is all the time coming from?
+
+Actors are painfully slow, too. How about them.
+
+Without caching, I see these measurements:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 40865, total ns of all calls: 1491644982, ns/call: 36501
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 29181147, ns/call: 411002
+Scope: DbPopulator::add_action
+    # calls: 20000, total ns of all calls: 2024325477, ns/call: 101216
+Scope: DbPopulator::add_pc_actor
+    # calls: 28095, total ns of all calls: 263111719, ns/call: 9365
+Scope: DbPopulator::add_npc_actor
+    # calls: 11621, total ns of all calls: 9064179454, ns/call: 779982
+Scope: DbPopulator::companion_actor
+    # calls: 21, total ns of all calls: 24001785, ns/call: 1142942
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 5159563056, ns/call: 257978
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 64406116729, ns/call: 3220305
+12.60user 1.54system 1:09.89elapsed 20%CPU (0avgtext+0avgdata 11264maxresident)k
+0inputs+0outputs (0major+624minor)pagefaults 0swaps
+
+Wow, these are interesting
+
+add_pc_actor:  0.263111719s total
+add_npc_actor: 9.064179454s total, 780us per call
+
+This kinda makes sense - add_pc_actor is mostly concernted the actor's class (cached) and name/id (cached).
+
+Let's try npc actor. That will again need two items in the key tuple - name, instance. Hmm.
+
+OK, results from caching the add_npc_actor:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 29310, total ns of all calls: 1513360733, ns/call: 51632
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 30869847, ns/call: 434786
+Scope: DbPopulator::add_action
+    # calls: 20000, total ns of all calls: 2197425464, ns/call: 109871
+Scope: DbPopulator::add_pc_actor
+    # calls: 28095, total ns of all calls: 243731566, ns/call: 8675
+Scope: DbPopulator::add_npc_actor
+    # calls: 11621, total ns of all calls: 309915206, ns/call: 26668
+Scope: DbPopulator::companion_actor
+    # calls: 21, total ns of all calls: 29489017, ns/call: 1404238
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 5675293912, ns/call: 283764
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 59263380004, ns/call: 2963169
+12.27user 1.30system 1:05.32elapsed 20%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+0outputs (0major+628minor)pagefaults 0swaps
+
+add_npc_actor:
+  -cache: 9.064179454s total, 780us per call
+  +cache: 0.309915206s total: 26.7us/call
+
+Another nice improvement, although I don't entirely understand the final number:
+
+total:
+  -add_npc_actor cache: 1:09.89
+  +add_npc_actor cache: 1:05.32
+
+populate_from_entry:
+  -cache: 64.406116729s, 3.220305 ms/call
+  +cache: 59.263380004s, 2.963169 ms/call
+
+None of the other actors are worth caching - add_pc_actor is already cached and add_companion_actor is only called 21
+times. How often do you have your comps out in raids? never.
+
+That may be it for our caching improvements. They were worthwhile. Let's commit these and try a test of the measurements
+without the caching.
+
+Later - gotta practice.
 
 2025-11-03
 
