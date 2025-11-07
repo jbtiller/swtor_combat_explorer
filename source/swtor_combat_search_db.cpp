@@ -9,11 +9,17 @@
 #include <pqxx/pqxx>
 #pragma GCC diagnostic pop
 
+const uint64_t APPLY_EFFECT_ID  {836045448945477ULL};
+const uint64_t REMOVE_EFFECT_ID {836045448945478ULL};
+
 DEFINE_bool(all_actions,         false, "Show all actions");
 DEFINE_bool(all_action_verbs,    false, "Show just the unique verbs in actions");
 DEFINE_bool(all_class_abilities, false, "Show all abilities per class");
 DEFINE_bool(all_classes,         false, "Show all classes");
 DEFINE_bool(all_combats,         false, "Show all combats");
+DEFINE_bool(all_effects,         false, "Show all effects");
+DEFINE_bool(num_events,          false, "Show number of Events");
+DEFINE_bool(num_logfiles,        false, "Show number of Log_Files");
 DEFINE_bool(pcs_in_combats,      false, "Show all PCs in all combats");
 
 auto main(int argc, char* argv[]) -> int {
@@ -33,6 +39,7 @@ auto main(int argc, char* argv[]) -> int {
             auto [verb] = row.as<std::string_view>();
             std::cout << verb << "\n";
         }
+        std:: cout << "rows=" << res.size() << "\n";
     }
     if (FLAGS_all_actions) {
         std::cout << "You requested all actions.\n";
@@ -46,6 +53,7 @@ auto main(int argc, char* argv[]) -> int {
             auto [verb, noun, detail] = row.as<std::string_view,std::string_view, std::string_view>();
             std::cout << verb << "," << noun << "," << detail << "\n";
         }
+        std:: cout << "rows=" << res.size() << "\n";
     }
     if (FLAGS_all_class_abilities) {
         std::cout << "You requested all abilitities for all classes.\n";
@@ -67,6 +75,7 @@ auto main(int argc, char* argv[]) -> int {
             auto [style, discipline, ability] = row.as<std::string_view,std::string_view, std::string_view>();
             std::cout << style << "," << discipline << "," << ability << "\n";
         }
+        std:: cout << "rows=" << res.size() << "\n";
     }
     if (FLAGS_all_classes) {
         std::cout << "You requested all classes.\n";
@@ -81,6 +90,7 @@ auto main(int argc, char* argv[]) -> int {
             auto [style, discipline] = row.as<std::string_view,std::string_view>();
             std::cout << style << "," << discipline << "\n";
         }
+        std:: cout << "rows=" << res.size() << "\n";
     }
     if (FLAGS_all_combats) {
         std::cout << "You requested all combats.\n";
@@ -94,20 +104,10 @@ auto main(int argc, char* argv[]) -> int {
             auto [begin_ts, area, logfile] = row.as<uint64_t,std::string_view,std::string_view>();
             std::cout << begin_ts << "," << area << "," << logfile << "\n";
         }
+        std:: cout << "rows=" << res.size() << "\n";
     }
     if (FLAGS_pcs_in_combats) {
         std::cout << "You requested the PCs for all combats.\n";
-        // auto res = tx.exec("SELECT DISTINCT combat, source FROM Event"
-        //                    "    JOIN Actor on Event.source = Actor.id"
-        //                    " WHERE Actor.type = 'pc' AND combat IS NOT NULL"
-        //                    " GROUP BY combat, source");
-        // std::cout << "combat_id, source_id\n";
-        // for (auto row : res) {
-        //     auto [combat_id, actor_id] = row.as<int, int>();
-        //     std::cout << combat_id << "," << actor_id << "\n";
-        // }
-        // The above works. Now, to get it to display more useful information.
-        // Combat ID, area name & difficulty, PC name
         auto res = tx.exec("SELECT DISTINCT"
                            "  combat as combat_id"
                            ", area_name.name as area_name"
@@ -129,8 +129,32 @@ auto main(int argc, char* argv[]) -> int {
                 row.as<int, std::string, std::string, std::string>();
             std::cout << combat_id << "," << area_name << ", " << difficulty_name << ", " << pc_name << "\n";
         }
-
+        std:: cout << "rows=" << res.size() << "\n";
     }
-
+    if (FLAGS_all_effects) {
+        std::cout << "You requested all of the unique effects in the Action table (no effect has details).\n";
+        auto res = tx.exec(" SELECT DISTINCT en.name FROM Action as act"
+                           "     JOIN Name AS en ON act.noun = en.id"
+                           "     JOIN Name AS aen ON aen.name_id = $1"
+                           "     JOIN Name AS ren ON ren.name_id = $2"
+                           " WHERE act.verb = aen.id OR act.verb = ren.id",
+                           pqxx::params(APPLY_EFFECT_ID, REMOVE_EFFECT_ID));
+        std::cout << "effect\n";
+        for (auto row : res) {
+            auto [eff] = row.as<std::string>();
+            std::cout << eff << "\n";
+        }
+        std:: cout << "rows=" << res.size() << "\n";
+    }
+    if (FLAGS_num_events) {
+        std::cout << "You requested all of the number of events in the database.\n";
+        std::cout << "rows=" << tx.query_value<int>("SELECT COUNT(*) FROM Event") << "\n";
+    }
+    if (FLAGS_num_logfiles) {
+        std::cout << "You requested all of the number of Log_Files in the database.\n";
+        std::cout << "rows=" << tx.query_value<int>("SELECT COUNT(*) FROM Log_File") << "\n";
+    }
     return 0;
 }
+
+

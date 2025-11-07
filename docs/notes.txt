@@ -1,1454 +1,5 @@
 -*- fil-column: 120; indent-tabs-mode: nil -*-
 
-Global to-do:
-
-1) STARTED Start pushing up to GitHub.
-2) Make a container for the build environment.
-3) Add CI/CD via github actions.
-4) STARTED Start using github for doing PRs, etc.
-5) STARTED Analyze gprof results
-6) STARTED Performance optimizations, if necessary.
-7) Add another field to Combat that describes the boss. Create table of area/bosses so we can add the boss to the combat when
-   we see them.
-8) Investigate boost program options library - CLI11 might be interesting
-9) Try profiling run with simple cache and simple metrics.
-10) Add tests for correct add_action. Oops.
-11) Is it reasonable to create abstract caching that could be turned on/off?
-
-2025-11-05
-
-What would a cache abstraction look like?  Basically, there are three things that can happen in our typical situation:
-
-1. The key is found in the cache. Return the value.
-2. The key is not found in the cache. Check the database.
-3. The key is found in the database. Return the value.
-4. The key is not found in the database. Add key to database and return value.
-
-Essentially, the abstraction looks like:
-
-1. A way to check the cache.
-2. A way to update the cache.
-3. A way to check the database.
-4. A way to insert into the database.
-
-Kind of like a strategy pattern. The strategy is:
-
-Check if key is in cache.
-If key in cache:
-    Return value
-Check if key in database.
-If key in database:
-    Return value
-Add key to database
-Return value
-
-Stuff to think about.
-
-This is a waste of time. The database is not the important part. Move on.
-
-Fuck the unit tests for the cache. I'm tired.
-
-Template on key, value
-class Cache
-    cache holds map.
-
-Cache add(
-    key
-    check database string
-    params to check database query
-    func to add to database
-) returns V value
-
-cache variable: template type, std::map<K,V>
-key: template type, K key
- check database: string query and pqxx::params
-func to add to database: lambda that does other adds (name_id, etc.)
-
-2025-11-04
-
-OK, I see these results after caching Name accesses in add_name_id using the first 10,001 log entries:
-
-no caching:
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
-Time taken by DbPopulator constructor: 24
-Scope: DbPopulator::add_name_id
-    # calls: 40013, total ns of all calls: 14866478954, ns/call: 371541
-6.04user 1.58system 0:43.05elapsed 17%CPU (0avgtext+0avgdata 11392maxresident)k
-0inputs+0outputs (0major+611minor)pagefaults 0swaps
-
-w/simple Name caching:
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
-Scope: DbPopulator::add_name_id
-    # calls: 40013, total ns of all calls: 1047626172, ns/call: 26182
-5.88user 0.88system 0:36.36elapsed 18%CPU (0avgtext+0avgdata 11264maxresident)k
-0inputs+0outputs (0major+613minor)pagefaults 0swaps
-
-add_name_id:
-
--cache:  26.18 us/call
-+cache: 371.54 us/call
-
-Total run timing:
-
--cache: 36.36m
-+cache: 43.05m
-
-Let's add another measurement. Let's measure the amount of time we spend in parsing the event and the amount of time we
-spend populating the database. Let's do 20k rows this time.
-
-OK, added measurements around the parser's parse_line() entrypoint and the populator's populate_from_entry()
-entrypoint. Here's what I see.
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
-Scope: DbPopulator::add_name_id
-    # calls: 79888, total ns of all calls: 1316509998, ns/call: 16479
-Scope: parse_line
-    # calls: 20000, total ns of all calls: 4177049579, ns/call: 208852
-Scope: populate_from_entry
-    # calls: 20000, total ns of all calls: 68004610889, ns/call: 3400230
-11.94user 1.94system 1:12.46elapsed 19%CPU (0avgtext+0avgdata 11520maxresident)k
-0inputs+0outputs (0major+621minor)pagefaults 0swaps
-
-So:
-
-add_name_id:            16.5 us/call
-parse_line:            208.9 us/call
-populate_from_entry: 3,400.2 us/call
-
-Wow.
-
-Where is that time going? More measurements.
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
-Scope: DbPopulator::add_name_id
-    # calls: 79888, total ns of all calls: 1362654713, ns/call: 17057
-Scope: DbPopulator::add_pc_class
-    # calls: 71, total ns of all calls: 103244251, ns/call: 1454144
-Scope: parse_line
-    # calls: 20000, total ns of all calls: 4223278368, ns/call: 211163
-Scope: populate_from_entry
-    # calls: 20000, total ns of all calls: 69845201809, ns/call: 3492260
-12.02user 1.92system 1:14.36elapsed 18%CPU (0avgtext+0avgdata 11392maxresident)k
-0inputs+0outputs (0major+619minor)pagefaults 0swaps
-
-Ooh. add_pc_class is slow. Best thing about it is it doesn't use add_name_id at all. Bad thing is that it's not called
-very often. :/ We can cache that!
-
-Key type will need to be a tuple.
-
-After caching add_pc_class:
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
-Scope: DbPopulator::add_name_id
-    # calls: 79872, total ns of all calls: 384643390, ns/call: 4815
-Scope: DbPopulator::add_pc_class
-    # calls: 71, total ns of all calls: 10807023, ns/call: 152211
-Scope: parse_line
-    # calls: 20000, total ns of all calls: 3954876191, ns/call: 197743
-Scope: populate_from_entry
-    # calls: 20000, total ns of all calls: 63577865887, ns/call: 3178893
-11.13user 1.64system 1:07.83elapsed 18%CPU (0avgtext+0avgdata 11136maxresident)k
-0inputs+0outputs (0major+614minor)pagefaults 0swaps
-
-About a 10x speedup. So, we have:
-
-add_pc_class:
-  -caching: 1,454.14us/call
-  +caching: 142.2us/call
-
-total:
-  -caching: 1:14.36
-  +caching: 1:07.83
-
-But... I need a bigger fish to fry.
-
-Ah, add_action!
-
-Let's profile add_action first. Before caching add_action:
-
-How weird. I got a crash. Signal 8 - floating point error?? Oh, sum probably got too large. Don't print the average and
-see what happens.
-
-Oh, no, oops. There are 2 add_actions and I instrumented the one that's never called. Oops. Fixt hat!
-
-OK, here's what we get without caching on add_action
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
-Scope: DbPopulator::add_name_id
-    # calls: 79888, total ns of all calls: 1429530198, ns/call: 17894
-Scope: DbPopulator::add_pc_class
-    # calls: 71, total ns of all calls: 28984957, ns/call: 408238
-Scope: DbPopulator::add_action
-    # calls: 20000, total ns of all calls: 14837079234, ns/call: 741853
-Scope: parse_line
-    # calls: 20000, total ns of all calls: 4187727149, ns/call: 209386
-Scope: populate_from_entry
-    # calls: 20000, total ns of all calls: 69275981237, ns/call: 3463799
-12.07user 1.90system 1:13.73elapsed 18%CPU (0avgtext+0avgdata 11392maxresident)k
-0inputs+0outputs (0major+612minor)pagefaults 0swaps
-
-So, 741.85 us/call. Now, with caching. Added caching to add_action. And here we go!
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
-Scope: DbPopulator::add_name_id
-    # calls: 40865, total ns of all calls: 1455509265, ns/call: 35617
-Scope: DbPopulator::add_pc_class
-    # calls: 71, total ns of all calls: 32467426, ns/call: 457287
-Scope: DbPopulator::add_action
-    # calls: 20000, total ns of all calls: 2046636890, ns/call: 102331
-Scope: parse_line
-    # calls: 20000, total ns of all calls: 5183463599, ns/call: 259173
-Scope: populate_from_entry
-    # calls: 20000, total ns of all calls: 64978259834, ns/call: 3248912
-12.72user 1.65system 1:10.50elapsed 20%CPU (0avgtext+0avgdata 11520maxresident)k
-0inputs+0outputs (0major+625minor)pagefaults 0swaps
-
-Results:
-
-add_action:
-  -caching: 741.9us/call
-  +caching: 102.3us/call
-
-total:
-  -caching: 1:13.73
-  +caching: 1:10.50
-
-Eh, definitely diminishing returns. The timing seems odd. Consider:
-
-Total parsing: 5.183463599s
-Total populating: 64.978259834s
-
-So, almost all the time is taken up in populating, as is to be expected.
-
-Of the functions I've "profiled" so far, I see (with caching):
-
-add_name_id total: 1.455509265s
-add_pc_class total: .324674260s
-add_action total:  2.046636890s
-
-These are very low numbers. Where is all the time coming from?
-
-Actors are painfully slow, too. How about them.
-
-Without caching, I see these measurements:
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
-Scope: DbPopulator::add_name_id
-    # calls: 40865, total ns of all calls: 1491644982, ns/call: 36501
-Scope: DbPopulator::add_pc_class
-    # calls: 71, total ns of all calls: 29181147, ns/call: 411002
-Scope: DbPopulator::add_action
-    # calls: 20000, total ns of all calls: 2024325477, ns/call: 101216
-Scope: DbPopulator::add_pc_actor
-    # calls: 28095, total ns of all calls: 263111719, ns/call: 9365
-Scope: DbPopulator::add_npc_actor
-    # calls: 11621, total ns of all calls: 9064179454, ns/call: 779982
-Scope: DbPopulator::companion_actor
-    # calls: 21, total ns of all calls: 24001785, ns/call: 1142942
-Scope: parse_line
-    # calls: 20000, total ns of all calls: 5159563056, ns/call: 257978
-Scope: populate_from_entry
-    # calls: 20000, total ns of all calls: 64406116729, ns/call: 3220305
-12.60user 1.54system 1:09.89elapsed 20%CPU (0avgtext+0avgdata 11264maxresident)k
-0inputs+0outputs (0major+624minor)pagefaults 0swaps
-
-Wow, these are interesting
-
-add_pc_actor:  0.263111719s total
-add_npc_actor: 9.064179454s total, 780us per call
-
-This kinda makes sense - add_pc_actor is mostly concernted the actor's class (cached) and name/id (cached).
-
-Let's try npc actor. That will again need two items in the key tuple - name, instance. Hmm.
-
-OK, results from caching the add_npc_actor:
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
-Scope: DbPopulator::add_name_id
-    # calls: 29310, total ns of all calls: 1513360733, ns/call: 51632
-Scope: DbPopulator::add_pc_class
-    # calls: 71, total ns of all calls: 30869847, ns/call: 434786
-Scope: DbPopulator::add_action
-    # calls: 20000, total ns of all calls: 2197425464, ns/call: 109871
-Scope: DbPopulator::add_pc_actor
-    # calls: 28095, total ns of all calls: 243731566, ns/call: 8675
-Scope: DbPopulator::add_npc_actor
-    # calls: 11621, total ns of all calls: 309915206, ns/call: 26668
-Scope: DbPopulator::companion_actor
-    # calls: 21, total ns of all calls: 29489017, ns/call: 1404238
-Scope: parse_line
-    # calls: 20000, total ns of all calls: 5675293912, ns/call: 283764
-Scope: populate_from_entry
-    # calls: 20000, total ns of all calls: 59263380004, ns/call: 2963169
-12.27user 1.30system 1:05.32elapsed 20%CPU (0avgtext+0avgdata 11520maxresident)k
-0inputs+0outputs (0major+628minor)pagefaults 0swaps
-
-add_npc_actor:
-  -cache: 9.064179454s total, 780us per call
-  +cache: 0.309915206s total: 26.7us/call
-
-Another nice improvement, although I don't entirely understand the final number:
-
-total:
-  -add_npc_actor cache: 1:09.89
-  +add_npc_actor cache: 1:05.32
-
-populate_from_entry:
-  -cache: 64.406116729s, 3.220305 ms/call
-  +cache: 59.263380004s, 2.963169 ms/call
-
-None of the other actors are worth caching - add_pc_actor is already cached and add_companion_actor is only called 21
-times. How often do you have your comps out in raids? never.
-
-That may be it for our caching improvements. They were worthwhile. Let's commit these and try a test of the measurements
-without the caching.
-
-Later - gotta practice.
-
-2025-11-03
-
-OK, created a ticket for doing some performance profiling. Let's build with profiling on:
-
-$ ccmake build/dev
-
-Turn ENABLE_PROFILING ON
-
-Then 'c' to configure and 'g' to generate.
-
-$ cmake --build --prest=dev
-
-Here's where we are:
-
-c775b8b (HEAD -> 3-explore-local-caching-to-speed-up-population, ...)
-
-To detect that an executable has been built against gprof, the internet recommends searching the symbols for
-'mcount'. Here's what I see:
-
-$ readelf -sWC build/dev/swtor_combat_populate_db | grep mcount
-   121: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND mcount@GLIBC_2.2.5 (5)
-  4263: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND mcount@GLIBC_2.2.5
-
--s: Show symbols
--W: Allow the output to exeed 80 characters
--C: Demangle symbols
-
-So, yes, we did link in profiling.
-
-Let's do a fresh run.
-
-$ psql -f makedb.txt
-
-$ ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate_profiling_on_c775b8b.txt
-
-Oh, CRAP. Didn't change the log level, so it's taking a looooong time.
-
-Let's turn off logging entirely:
-
-$ BL_LEVEL=fatal ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate_profiling_on_c775b8b.txt
-
-OK, it's going. Wait, I want to time the run externally.
-
-$ psql -f makedb.txt
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate_profiling_on_c775b8b.txt
-
-$ cat populate_profiling_on_c775b8b.txt
-675.88user 75.89system 48:43.76elapsed 25%CPU (0avgtext+0avgdata 11520maxresident)k
-0inputs+1112outputs (0major+951minor)pagefaults 0swaps
-
-$ ls -l gmon.out 
--rw-rw-r-- 1 jason jason 567076 Nov  3 14:41 gmon.out
-
-$ cd profiling
- ls -lart
-total 568
--rw-rw-r--  1 jason jason 567076 Nov  3 14:41 gmon_c775b8b.out
--rw-rw-r--  1 jason jason    139 Nov  3 14:41 populate_profiling_on_c775b8b.txt
-
-Generate a gprof analysis:
-
-$ gprof ../build/dev/swtor_combat_populate_db gmon_c775b8b.out > gprof_analysis_c775b8b.txt
-
-Let's look at the analysis:
-
-Each sample counts as 0.01 seconds.
-  %   cumulative   self              self     total           
- time   seconds   seconds    calls  ms/call  ms/call  name 
-...
-  0.92     12.40     1.42 114339665    0.00     0.00  std::__cxx11::basic_string<
-...
-  0.58     17.34     0.89                             pqxx::connection::exec_params
-...
-  0.41     24.68     0.62 128647510    0.00     0.00  auto LogParserHelpers::get_next_field
-...
-  0.13     84.58     0.20  1308899     0.00     0.01  DbPopulator::add_name_id(LogParserTypes::NameId const&)
-
-Most calls: get_next_field 12 million times. Holy crap. Took up 0.4%
-
-'time' said it toopk 48:43.76s for the entire run.
-
-Let's look at the gprof2dot analysis:
-
-$ gprof build/dev/swtor_combat_populate_db gmon.out | gprof2dot --strip | dot -Tpng -o gprof.png
-
-Some interesting takeaways from the dependency graph:
-
-1. pqxx query01 takes 4.89% of the time.
-2. The DbPopulator constructor took 9.25% of the time? What??
-3. _fini (shutdown) took 9% of the time? These numbers can't be right.
-
-I don't understand that - almost nothing in the populators. Most of them aren't even listed.
-
-Dammit, something's not right. Fuck this. Gonna add my own shitty profiler.
-
-OK, added class that captures time on entry and exit from a function. Then output in the top-level populator and I see this:
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
-Time taken by DbPopulator constructor: 24
-Scope: DbPopulator::add_name_id
-    # calls: 40013, total ns of all calls: 14866478954, ns/call: 371541
-6.04user 1.58system 0:43.05elapsed 17%CPU (0avgtext+0avgdata 11392maxresident)k
-0inputs+0outputs (0major+611minor)pagefaults 0swaps
-
-Oh, I limited the number of line we process to 10k to make my life easier.
-
-Geez, really, 371ms per call? We can do better than that, I bet. First, a cheesy implementation.
-
-Note that the sum of all calls is 14.87s, or about a 4th of the entire time. Is that right?
-
-OK, let's rebuild without profiling and see how we do.
-
-$ ccmake build/dev
-c then e then g
-
-$ cmake --build --preset=dev && ctest --preset=dev
-
-$ readelf -sWC build/dev/swtor_combat_populate_db | grep mcount | wc -l
-0
-
-No profiling
-
-$ psql -f makedb.txt
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate_profiling_off_c775b8b.txt
-
-$ psql -d swtor_combat_explorer -c 'select count(*) from event;'
- count  
---------
- 145986
-(1 row)
-
-Done.
-
-cat populate_profiling_off_c775b8b.txt
-304.42user 76.11system 42:11.12elapsed 15%CPU (0avgtext+0avgdata 11392maxresident)k
-0inputs+0outputs (0major+609minor)pagefaults 0swaps
-
-Hmm, 6 minutes faster.
-
-Added some caching. Just a simple std::map that maps name UUIDs to Name row IDs. Let's see how this does.
-
-First a run without profiling but with my dumb measurement in place.
-
-$ psql -f makedb.txt
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
-Scope: DbPopulator::add_name_id
-    # calls: 40013, total ns of all calls: 1047626172, ns/call: 26182
-5.88user 0.88system 0:36.36elapsed 18%CPU (0avgtext+0avgdata 11264maxresident)k
-0inputs+0outputs (0major+613minor)pagefaults 0swaps
-
-Yes, we just reduced the time by a factor of more than 10x. That's a win. :)
-
-10001 events...
-
-275 events per second. That's a helluva lot better!!
-
-There are around 4 add_name_id() calls per event row. That's quite nice.
-
-Let's take off the 10,000 record limiter and do the entire file. Here we go! Should take around 1,221 seconds, or 20 minutes.
-
-$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
-Time taken by DbPopulator constructor: 8ms
-Scope: DbPopulator::add_name_id
-    # calls: 1308899, total ns of all calls: 9634986575, ns/call: 7361
-288.71user 48.40system 36:57.44elapsed 15%CPU (0avgtext+0avgdata 11520maxresident)k
-0inputs+0outputs (0major+630minor)pagefaults 0swaps
-
-Took off about 5 minutes, or around 1/9 (11.1%) of the total runtime. That's not bad. But not great. How can I do better?
-
-2025-11-02
-
-Leftover from yesterday:
-
-Going to do a run with profiling enabled on this log file:
-
-test/logs/combat_2025-04-20_19_52_15_159478.txt
-
-$ wc -l test/logs/combat_2025-04-20_19_52_15_159478.txt
-336290 test/logs/combat_2025-04-20_19_52_15_159478.txt
-
-$ grep EnterCombat test/logs/combat_2025-04-20_19_52_15_159478.txt | wc -l
-56
-
-$ BL_LEVEL=warning ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate.out
-
-$ wc -l populate.out
-populate.out 336457
-
-swtor_combat_explorer=> select count(*) from event;
- count  
---------
- 336290
-
-Matches perfectly with # of lines in the raw event log. yay.
-
-Why are there more lines in populate.out than rows in the event table?
-
-$ grep -v "Parsing log line" populate.out | wc -l
-167
-
-All I see in these lines are "Did not encounter a double character. Skipping." Hmm.
-
-So, no other errors or warnings. Nice. And this ONLY happens in the "AreaEntered" action that includes the two sentinels
-(he3001) and <v7.0.0b>. Must be the second, since this can be parsed as a double. Let's see. Yeah, not gonna fix
-that. No reason - very simple and occurs infrequently.
-
-Initial timestamp in populate.out:
-
-14:20:54.437478
-
-Final timestamp in populate.out:
-
-15:11:18.752620
-
-About 50m 22s (3022s) for 336290 records. Or, a rough estimate of parsing/population time per event:
-
-0.008s
-
-Ooh, 8ms per event - that's f'ing slow.
-
-swtor_combat_explorer=> select count(*) from event;
- count  
---------
- 336290
-
-Matches perfectly with # of lines in the raw event log. yay.
-
-Here's how we redirect the psql REPL output to a file:
-
-swtor_combat_explorer=> \o populate_events.txt
-swtor_combat_explorer=> select * from event order by ts;
-swtor_combat_explorer=> \o
-
-The "\o file" turns on redirection in the psql REPL and then empty "\o" turns it off. Handy.
-
-Let's rebuild with profiling off and try again.
-
-OK, rebuilt and re-run.
-
-$ BL_LEVEL=warning ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate.out
-
-Interesting question: How many DB transactions do I make? Let's could these up. Huh, I don't see how to do it. :/
-
-OK, some non-profiling results:
-
-First entry timestamp:
-
-15:25:45.962758
-
-Last entry timestamp:
-
-16:17:59.882762
-
-Took about 52m 14s
-
-That makes no sense - it's *slower* than with profiling on. Fuck that.
-
-Oh, well, let's get back to the searching stuff.
-
-OK, got the PCs in combat working. But... I have a problem. The combat is showing just the area name, like "R-4 anomaly"
-and nothing more. I think I need to add some more info to the populator so it shows the boss in the Combat table. Hmm.
-
-So, what would this need?
-
-When we first enter combat, we have the area only but not the boss.
-
-Well, I'd need a list of the names of bosses and then when I encounter the boss during combat, add that boss to the
-combat entry.
-
-So, just make a list of bosses and put that in another database table?
-
-Too much for for now. Make a TODO.
-
-Let's lookat more searches. Issue has info:
-
-    Show all abilities on a per-class basis
-    Given a combat ID and a PC ID, show all the abilities used by that PC in that combat
-    Show all classes
-    Show a count of the number of combats in each area
-
-Getting there. I have these so far:
-
-DEFINE_bool(all_actions,         false, "Show all actions");
-DEFINE_bool(all_action_verbs,    false, "Show just the unique verbs in actions");
-DEFINE_bool(all_class_abilities, false, "Show all abilities per class");
-DEFINE_bool(all_classes,         false, "Show all classes");
-DEFINE_bool(all_combats,         false, "Show all combats");
-DEFINE_bool(pcs_in_combats,      false, "Show all PCs in all combats");
-
-More to do, but that's a start.
-
-I'm not thrilled with gflags. It feels pretty old and unmaintained and clunky. I also really don't like the usage
-format. What's boost::options up to?
-
-2025-11-01
-
-Made a psql script to create the database. Script is makedb.txt. To use:
-
-$ psql -f makedb.txt
-
-(This assumes a bunch of things, like PostgreSQL is installed, you have an account associated with the current user,
-etc. etc.)
-
-Let's try to flesh out the command-line searcher I started last week.
-
-Ooh, created an issue. I love issues. I think I can link the branch to the issue? Not sure how. Oh, you'd create the
-branch, then create a PR for it and then link that PR to the issue. I can also just create the branch from the issue
-page and pull to get it.
-
-That worked well and gives me a consistent naming scheme between the branch and the issue. Good.
-
-Time for lunch.
-
-Going to do a run with profiling enabled on this log file:
-
-test/logs/combat_2025-05-07_19_07_03_273505.txt
-
-$ wc -l test/logs/combat_2025-05-07_19_07_03_273505.txt
-  101798 test/logs/combat_2025-05-07_19_07_03_273505.txt
-
-$ grep EnterCombat test/logs/combat_2025-05-07_19_07_03_273505.txt | wc -l
-19
-
-$ BL_LEVEL=warning ./build/dev/swtor_combat_populate_db test/logs/combat_2025-05-07_19_07_03_273505.txt >& populate.out
-
-
-2025-10-31
-
-Trying to push to github, but no luck. So, github account is "jbtiller". email is jtiller@fastmail.fm.
-
-I didn't have any ssh keys. Created a key, github_jtiller_fastmail_fm_jbtiller_ed25519, and added to github. Still no
-love.
-
-I can test it with ssh via
-
-ssh -T git@github.com -i ~/.ssh/github_jtiller_fastmail_fm_jbtiller_ed25519
-
-which worked. But not connected to git yet.
-
-Can't find anyway on git command line 'push' to specify which key to use.
-
-Added config in ~/.ssh:
-
-Host github.com
-  HostName github.com
-  IdentityFile ~/.ssh/github_jtiller_fastmail_fm_jbtiller_ed25519
-
-Made sure ~/.ssh/config had 600 perms.
-
-Now it's telling me this:
-
-hostkeys_find_by_key_hostfile: hostkeys_foreach failed for /home/jason/.ssh/known_hosts: Permission denied
-The authenticity of host 'github.com (140.82.116.4)' can't be established.
-ED25519 key fingerprint is SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU.
-This key is not known by any other names.
-Are you sure you want to continue connecting (yes/no/[fingerprint])? 
-
-I say "yes" and it w3orks!
-
-TODO: Rebuilt with profiling enabled. Run against some logfiles (copy exact command line here). Then store results in a
-subdirectory. Then we can do some local caching (add_name_and_id, add_action, etc.) and see how things change.
-
-2025-10-30
-
-Added logic to specify how to handle populating logfiles that have already been parsed and pushed into the
-database. That's kind of nice.
-
-Added profiling via gprof to my code in the CMakeLists.txt like so:
-
-target_compile_options(
-  swtor_combat_populate_db_exe
-  PRIVATE -pg
-)
-
-target_link_options(
-  swtor_combat_populate_db_exe
-  PRIVATE -pg
-)
-
-Now I'm running the populator (which also exercises the parser) against some logfiles. No idea what this will look
-like. This will produce gmon.out.
-
-We get an analysis via
-
-gprof swtor_combate_populate_db_exe gmon.out > analysis.txt
-
-Note that I tried gprofng, but it doesn't actually hack up the executable and just samples (somehow) the state of the
-execution and uses that to infer timing, but that didn't seem very useful at all to me. Nice that it didn't require
-recompilation and a big slow-down, but not much actual data.
-
-To think about:
-
-1) Start pushing up to GitHub.
-2) Make a container for the build environment.
-3) Add CI/CD via github actions.
-4) Start using github for doing PRs, etc.
-5) Analyze gprof results
-6) Performance optimizations, if necessary.
-
-OK, run finally finished. Around 330k log lines parsed and populated.
-
-Highest cost of my calls:
-
-DbPopulator::populate_from_entry - makes sense, this wraps all other populateion calls
-DbPopulator::add_name_id - as I expected, this is the most expensive because it's called so often
-    in fact, it's called 1,309,195 times for 330k entries. Wow, that's a lot. Easy to optimize via cache.
-DbPopulator::add_action - not surprising, called on every single event. Easy enough to cache this, too.
-
-Learned how to visualize using gprof2dot. Via:
-
-gprof build/dev/swtor_combat_populate_db gmon.out | gprof2dot --strip | dot -Tpng -o gprof.png
-
-Very handy. '--strip' gets rid of all the cruft (function params, template shit, etc.). Very nice. Basically told me the
-same thing but the callgraph is nice.
-
-Also a recommendation to use 'callgrind' from valgrind instead of gprof. Not sure how callgrind works. Maybe look that
-up.
-
-But, the result I see from here is that adding the Name and Action cache would be handy.
-
-Bedtime.
-
-2025-10-27
-
-Turns out you can have two ExitCombats in a row!
-
-File: combat_2025-03-22_17_47_15_992759.txt
-
-93027 and 93062
-
-No intervening EnterCombat. Weird.
-
-There's only 500ms or so between these lines.
-
-It looks like it ends when I die and then it ends again when the final boss dies. Hmm.
-
-Populator can't handle that and crashed. What should we do in that situation?
-
-...43.720: ExitCombat
-...43.805: Boss dies
-...44.215: ExitCombat
-
-Nobody died in-between or immediately. I dunno what happened. I'll log an error and ignore it.
-
-Going to try Google's "gflags" library for command line parsing. Who knows?
-
-Can't get it to build via FetchContent. Getting this error:
-
-CMake Error (dev) at build/dev/_deps/gflags-src/CMakeLists.txt:430 (gflags_define):
-  uninitialized variable 'LIB_SUFFIX'
-
-Tried running ccmake in the gflags dir and 'c' for configure and then try to generate via cmake - no joy.
-
-Had to set LIB_SUFFIX in gflag's CMakeLists.txt. Also had to update the required min version to 3.5 due to
-deprecation. Sheeh. Ugh, also had to fix a floating comparison in a test I don't care about in gflags. Ugh.
-
-
-
-2025-10-25
-
-Fuck, the logfile is in CP-1252 (WINDOWS-1252) encoding and the database uses UTF-8 by default. Fuck fuck.
-
-Use SET client_encoding = WIN1252; after creating database. Oops, didn't work. Still same error.
-
-Want entire DB to be WIN1252.
-
-FUCK ME.
-
-create database swtor_combat_explorer with encoding 'WIN1252' LC_COLLATE='en_US.WIN1252' LC_CTYPE='en_US.WIN1252' TEMPLATE=template0;
-
-Didn't work.
-
-create database swtor_combat_explorer with encoding 'WIN1252' LC_COLLATE='C' LC_CTYPE='C' TEMPLATE=template0;
-
-This seemed to have worked.
-
-2025-10-13
-
-Things are apace. Almost done with the db parser. I was able to create ParsedLogLine and have it populate an Event and
-all of the vairous sub-tables. Yay.
-
-I think I should rename the advanced_class table to be more up with the current nomenclature.
-
-Interestingly, the game and the documentation is schizophrenic. The website talks about the old "class" and "advanced
-class" terms, but the game itself talks about "Combat Style" and "Discipline." And the log talks about "Discipline
-Changed" and doesn't use "class/advanced class" anywhere. Joy.
-
-I think the table should be "Class" and the attributes should be "style" and "discipline." Makes it easier to get a
-handle on it, IMHO.
-
-I also created a new table that holds an ability name and a reference to a class. The ability is intended to be a unique
-ability only available to the associated class. This will allow the DB to store a PC's class even if we never see a
-DisciplineChanged event, which is common in some situations, like PvP or world activities, where not everybody's grouped
-up.
-
-In addition, I want to prepopulate the Class (was Advanced_Class) table with the current style/disciplines for PCs. No
-reason to populate this table from the log. Just gotta do it.
-
-Oh, I just removed clang-tidy entirely from the build. It was so slow and I get tidy from the lsp, so not a big
-deal. IT'S SO MUCH FASTER NOW.
-
-I'm gonna try parsing an entire log soon!! Yikes!! Then I gotta work on some searches to find interesting things... heh
-heh heh.
-
-Should I add a Logfile attribute to the Event table? That way you can always relate a log entry to the logfile it came
-from and vice-versa. Yeah, I think it's a good idea. I have the logfile attribute in the Combat table, but there are a
-lot of log entries that fall outside of combat, and those currently can't be related to a specific logfile.
-
-But... does that matter? I'm not sure it does. The only reason we care about logfile even now is that we can keep track
-of its parsing status via the "fully_parsed" attribute. Theoretically, once a logfile is fully parsed we can just ignore
-a request to parse it again and save a ton of time.
-
-In the end, I don't think it's worth doing anything to Event. Let's leave it the way it is. Who knows if this will even
-be relevant in the end.
-
-The db populator executable needs a lot of work. I haven't touched it in over a month since I moved the population code
-into its own library.
-
-2025-10-01
-
-OMG, I think I just got rid of clang-tidy for all time. Well, I didn't see it running in a build.  So much faster. Let's
-try changing just one file.
-
-One problem of using the language server, of course, is that it runs clang-tidy, too.
-
-No, I still see tidy being run. AARGH. Where? Why? ::sigh::
-
-Wait. How could I possibly reparse the same log? How I would I know lines had been parsed and populated and which
-hadn't? I'd have to search every line for the same timestamp and some other unique combination of attributes to see if
-it existed. If this doesn't work right, I'd end up repopulating the entire file again, essentially blowing up the Event
-table with duplicated garbage. Ugh.
-
-OK, that's a problem for another time. But it will need to be solved. Easiest way seems to be by adding a logfile
-attribute to Event. Then when a reparse was requested, we'd just blow everything, all events and combats and combat
-actors related to that logfile and then reparse from scratch. I like that.
-
-Dammit, so many things to do. :/
-
-2025-09-27
-
-OK, spend some time to avoid running clang-tidy all over again.
-
-
-
-2025-09-26
-
-One possibility - We could flatten the text event into a single csv row with empty fields. Make it super easy to
-parse. Like an intermediate representation. Another output like the database. Advantage: easier to read. Disadvantage -
-more code to maintain. Advantage - other programs could work with this text more easily than interacting with the
-database, which requires Postgres, blah blh blah. Disadvantage: reading csv might be slower and client would still have
-to keep track of actors. But not a huge deal.
-
-Wouldn't depend on a library, either, could do all csv parsing by hand since no string in the log can ever contain a
-comma. Hmm.
-
-2025-09-22
-
-Car problems worked out, yay. A lot (lot lot) of time on add PC Actor function and its tests. I feel like I'm
-overthinking this and that's why it's so complicated. Every log seems to start with
-
-AreaEntered
-DisciplineChanged
-
-So, it's only for the first line that I won't know the class. You can't change class during combat so all I really need
-to handle is remembering the actor row id of the last time I saw the pc. When combat starts I could even just search for
-the most recent actor row that has the PC's name. Easy enough.
-
-I'm seriously making this more complicated than it needs to be. :/ I'm pretty sure that all I need to remember is the
-most recent actor row ID of the actor's name. But... maybe not. It looks like the logs DO have instances where the first
-thing I see of a PC is NOT their class. :/ Rats!!
-
-So I think I'll keep it simpl and use m_pcs and just update it when a new row is created in Actor.
-
-2025-09-13
-
-Stupid car problems, choir party - yesterday was fun, actually. No programming though. Today I'm back at it. Finished
-add_pc_class and writing the test. Getting a weird error:
-
-unknown file: Failure
-C++ exception with description "ERROR:  input of anonymous composite types is not implemented
-CONTEXT:  unnamed portal parameter $2 = '...'
-" thrown in the test body.
-
-After finding it and wrapping with a catch and rethrowing, I see this:
-
-OOPS1
-ERROR:  input of anonymous composite types is not implemented
-CONTEXT:  unnamed portal parameter $2 = '...'
-
-SELECT id FROM Advanced_class WHERE (style, advanced_class) = ($1, $2)
-unknown file: Failure
-C++ exception with description "ERROR:  input of anonymous composite types is not implemented
-CONTEXT:  unnamed portal parameter $2 = '...'
-" thrown in the test body.
-
-2025-09-10
-
-Making good progress, but slowed by my stupid car problems. :/
-
-2025-09-06
-
-OK, finally getting on a roll. I think I have a better handle on pqxx and PostgreSql.
-
-NOTE: Don't try to insert a value into a SERIAL field. I don't think the database knows to update the "get next value"
-so eventually i think we get a clash.
-
-I'm actually finding bugs with these tests, yay yay yay.
-
-
-
-2025-09-04
-
-Yeah, lots of time has gone by. Getting more familiar with pqxx, lots of of learning and failing. :/
-
-IMPORTANT: In SELECT statements, DON'T surround the result column list in '()'! This causes pqxx to NOT PARSE THE
-RESULT. So, you just get a single column back and it's only useful as null-terminated string. Ugh, that cost me days of
-pain.
-
-Turns out more info here: https://stackoverflow.com/questions/55320143/do-you-need-surrounding-parantheses-in-postgres-select-statement
-
-So, if you put the parens in there, you're indicating you want a composite value value in a single column. The parens
-form a "row constructor or "composite value." I was getting back a row with one column of a "row" type. I had no idea
-had to deal with that.
-
-After futzing around
-
-2025-08-23
-
-pqxx::work is just an alias for pqxx::transaction<>. Too bad that's not documented anywhere.
-
-2025-08-17
-
-Brahms was awesome.
-
-Time to add pg to the CMake file and create a new executable to interact with pg and the parser library.
-
-Tryuing to use libpqxx, a C++ API that sits on top of libpq, the standard C-client interface. Not working,
-however. Installed libpqxx-dev and libpq-dev and then modified CMake per suggestion.
-
-However, doesn't work because because libpqxx looks for std::source_location for some reason but c++20 doesn't have it -
-my code is c++20. So, gonna switch over to fetchcontent.
-
-OK, got it going. Looking good. Runs and I can connect to the DB. Let's see if I can query the version table, which
-should have a row.
-
-Got it! It works! Yay.
-
-
-
-2025-08-16
-
-Brahms day! But a few database things as well. Probably should use the
-environment variables for connecting/authenticating to the database.
-
-PGDATABASE=swtor_combat_explorer
-PGUSER=jason
-PGPASSWORD=jason
-
-Gotta get ready.
-
-2025-08-15
-
-After doing some futzing, I was able to populate the database with my
-tables. Now I should try writing some code that uses the parser and
-populates the tables themselves.
-
-Fun!
-
-Seems like I need another program, a 'populator' that uses the parser.
-
-OK, cool.
-
-Wait, I think I should put a version number into the database. That
-way I can (theoretically) allow the client code to require a version
-and to warn users if the database is old. I could also (theoretically)
-embed information on how to migrate between versions?
-
-2025-08-14
-
-OK, so how do I do this?
-
-Trying to 'createdb' (per Postgres documentation), but getting an
-error:
-
-$ createdb: error: database creation failed: ERROR:  permission denied to create database
-
-The tutorial indicates that I need to log into the account that's
-associated with the postgres server. Can't seem to do that. I found a
-user named 'postgres', but I don't know the password!
-
-$ su postgres
-Password: 
-su: Authentication failure
-
-Tried my favorite and some other obvious ones, like:
-
-admin
-administrator
-postgres
-postgresql
-jason
-
-I think I installed it as part of the SQL class, but I can't remember
-much about that. Let's go look.
-
-Huh, the notes from the postgres class look like this:
-
-$ sudo apt-get install postgresql postgresql-contrib
-
-Start the service running:
-
-$ sudo systemctl start postgresql.service
-
-Become the postgres user to avoid having to authenticate with the
-database as the superuser:
-
-$ sudo -i -u postgres
-
-Access the command-line client:
-
-$ psql
-
-Now I can make my user and database:
-
-CREATE USER jason WITH PASSWORD 'jason';
-CREATE DATABASE people WITH OWNER 'jason';
-
-Now get out of sudo and connect directly:
-
-$ psql people jason
-psql (16.3 (Ubuntu 16.3-0ubuntu0.24.04.1))
-Type "help" for help.
-
-people=>
-
-OK, that all seems reasonable. However, I'm guessing in order to use
-createdb I'll have to specify my user name somehow. Let's see.
-
-Yeah, createdb can specify the username:
-
--U, --username  user name to connect as
--W, --password  force password prompt
-
-$ createdb -WU jason
-Password: (entered jason)
-createdb: error: database creation failed: ERROR:  permission denied to create database
-
-So, still no joy. Let's try the suggestion from the class:
-
-$ sudo -i -u postgres
-[sudo] password for jason: 
-postgres@jason-ThinkPad-T580:~$ 
-
-OK, so now I'm the postgres user.
-
-postgres@jason-ThinkPad-T580:~$ psql
-psql (16.9 (Ubuntu 16.9-0ubuntu0.24.04.1))
-Type "help" for help.
-
-postgres=# SELECT * from USER;
-   user   
-----------
- postgres
-(1 row)
-
-There's no 'jason' user like I expected? I wonder if I didn't actually
-do that.
-
-postgres=# CREATE USER jason WITH PASSWORD 'jason';
-ERROR:  role "jason" already exists
-
-Huh. So, it's a role and not in the USER table?
-
-Ah, there's a super-secret command that I found via:
-
-postgres=# \?
-
-\dg shows the roles
-
-                             List of roles
- Role name |                         Attributes                         
------------+------------------------------------------------------------
- jason     | 
- postgres  | Superuser, Create role, Create DB, Replication, Bypass RLS
-
-Huh. Notice that 'jason' doesn't have any attributes, so it literally
-can't create databases. Ah-ha!
-
-Per the web:
-
-postgres=# ALTER ROLE jason WITH CREATEDB;
-ALTER ROLE
-postgres=# \dg
-                             List of roles
- Role name |                         Attributes                         
------------+------------------------------------------------------------
- jason     | Create DB
- postgres  | Superuser, Create role, Create DB, Replication, Bypass RLS
-
- Excellent. Trying via createdb again.
-
-$ createdb -WU jason
-Password:
-$
-
-No erros this time. Excellent.
-
-$ createdb -WU jason swtor_combat_explorer
-Password:
-$
-
-Ooh.
-
-$ pg_dump -WU jason
-Password: 
---
--- PostgreSQL database dump
---
-
--- Dumped from database version 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)
--- Dumped by pg_dump version 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)
-
-SET statement_timeout = 0;
-SET lock_timeout = 0;
-SET idle_in_transaction_session_timeout = 0;
-SET client_encoding = 'UTF8';
-SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
-SET check_function_bodies = false;
-SET xmloption = content;
-SET client_min_messages = warning;
-SET row_security = off;
-
---
--- PostgreSQL database dump complete
---
-
-$
-
-There is a 'jason' database.
-
-$ pg_dump -WU jason swtor_combat_explorer
-Password: 
---
--- PostgreSQL database dump
---
-
--- Dumped from database version 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)
--- Dumped by pg_dump version 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)
-
-SET statement_timeout = 0;
-SET lock_timeout = 0;
-SET idle_in_transaction_session_timeout = 0;
-SET client_encoding = 'UTF8';
-SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
-SET check_function_bodies = false;
-SET xmloption = content;
-SET client_min_messages = warning;
-SET row_security = off;
-
---
--- PostgreSQL database dump complete
---
-
-$
-
-There's also a 'swtor_combat_explorer' database.
-
-Let's try creating our tables one-by-one.
-
-$ psql
-psql (16.9 (Ubuntu 16.9-0ubuntu0.24.04.1))
-Type "help" for help.
-
-jason=> 
-
-Looks good. Now, how do I set the current database?
-
-jason=> \c swtor_combat_explorer
-You are now connected to database "swtor_combat_explorer" as user "jason".
-swtor_combat_explorer=> 
-
-OK, sweet. Notice that "database" and "schema" seemed to be used
-interchangably. Now let's create our first table!
-
-swtor_combat_explorer=> CREATE TABLE Name (
-  id BIGINT NOT NULL,
-  name VARCHAR (128),
-  PRIMARY KEY (id)
-)
-swtor_combat_explorer->
-
-Seemed to work. Actually, I hadn't finished the command yet! See the
-prompt went from => to -> (equals to dash). This means that I haven't
-completed the command. Let's try again.
-
-swtor_combat_explorer=> CREATE TABLE Name (
-  id BIGINT NOT NULL,
-  name VARCHAR (128),
-  PRIMARY KEY (id)
-);
-CREATE TABLE
-swtor_combat_explorer=>
-
-Better.
-
-swtor_combat_explorer=> \dt
-       List of relations
- Schema | Name | Type  | Owner 
---------+------+-------+-------
- public | name | table | jason
-(1 row)
-
-swtor_combat_explorer=> 
-
-OK, I like it. How do I show the schema of a table?
-
-Note that Postgres doesn't seem to preserve capitalization - the
-relation is "name" not "Name" like I entered. Hmm.
-
-swtor_combat_explorer=> \d name
-                       Table "public.name"
- Column |          Type          | Collation | Nullable | Default 
---------+------------------------+-----------+----------+---------
- id     | bigint                 |           | not null | 
- name   | character varying(128) |           |          | 
-Indexes:
-    "name_pkey" PRIMARY KEY, btree (id)
-
-swtor_combat_explorer=> 
-
-So, this just relates a numeric ID to a string. ez-pz.
-
-Next table.
-
-swtor_combat_explorer=> CREATE TABLE Combat_Style (
-  id SERIAL,
-  name BIGINT NOT NULL,
-  PRIMARY KEY (id),
-  FOREIGN KEY (name) REFERENCES Name(id)
-);
-CREATE TABLE
-swtor_combat_explorer=>
-
-And how does it look?
-
-swtor_combat_explorer=> \d combat_style
-                            Table "public.combat_style"
- Column |  Type   | Collation | Nullable |                 Default                  
---------+---------+-----------+----------+------------------------------------------
- id     | integer |           | not null | nextval('combat_style_id_seq'::regclass)
- name   | bigint  |           | not null | 
-Indexes:
-    "combat_style_pkey" PRIMARY KEY, btree (id)
-Foreign-key constraints:
-    "combat_style_name_fkey" FOREIGN KEY (name) REFERENCES name(id)
-
-swtor_combat_explorer=>
-
-Nice. The 'nextval' stuff is the internal junk that implements a
-monotonically-increasing sequence suitable for an identifier (SERIAL).
-
-
-
-2025-08-13
-
-OK, I think the parsing task is pretty much done. I can go through
-hundreds of logs with gigabytes of data and not encounter a single
-parsing failure. Of course, I've also given up on some of the
-higher-level semantic extraction I was trying to embed. No matter,
-probably better left to client code anyway.
-
-Now I want to think about how to store this data in a database. Need
-to think about tables and fields now. Joy. SQL. Suck.
-
-Obvious tables:
-
-CREATE TABLE Version (
-  id INT UNIQUE NOT NULL,
-  creation TIMESTAMP NOT NULL
-);
-
--- All of the names we've seen so far
---
--- This is an optimization to avoid storing strings in multiple tables.
--- The 'id' field is directly from the input log entry and is guaranteed
--- unique but is essentially a GUID.
-CREATE TABLE Name (
-  id BIGINT NOT NULL,
-  name VARCHAR (128),
-  PRIMARY KEY (id)
-);
-
--- Because the Name primary key is a BIGINT, all FKs to it must also
--- be FKs.
-
--- These little tables that are really just FKs into Name are giving
--- semantic meaning to the Name. We could also add an enumeration column
--- to Name indicating the context for Name. I'm not sure if that's a
--- better idea. But, the enumeration does mean I'd have to update the
--- enumeration each time I wanted to add a new category of meaning,
--- whereas this just requires adding a table. Hmm.
-CREATE TABLE Combat_Style (
-  name BIGINT NOT NULL,
-  PRIMARY KEY (name),
-  FOREIGN KEY (name) REFERENCES Name(id)
-);
-
-CREATE TABLE Advanced_Class (
-  id SERIAL,
-  name BIGINT NOT NULL,
-  style INT NOT NULL,
-  PRIMARY KEY (id),
-  FOREIGN KEY (name) REFERENCES Name(id),
-  FOREIGN KEY (style) REFERENCES Combat_Style(name)
-);
-
-CREATE TABLE Actor (
-  id SERIAL,
-  name BIGINT NOT NULL,
-  PRIMARY KEY (id),
-  FOREIGN KEY (name) REFERENCES Name(id)
-);
-
--- Because PC's can change their class, we need another identifier to
--- refer to the specific style/class used in a combat.
-
--- NOTE: Initially I thought I could use the inherited 'id' column from
--- Actor to be the primary key, but I had to list the 'id' directly in
--- 'PC' to allow me to refer to it from Companion. Postgres says this:
---
--- NOTICE:  merging column "id" with inherited definition
-CREATE TABLE PC (
-  id SERIAL,
-  class INT NOT NULL,
-  PRIMARY KEY (id),
-  FOREIGN KEY (class) REFERENCES Advanced_Class(id)
-) INHERITS (Actor);
-
-CREATE TABLE Companion (
-  id SERIAL,
-  pc INT NOT NULL,
-  PRIMARY KEY (id),
-  FOREIGN KEY (pc) REFERENCES PC(id)
-) INHERITS (Actor);
-
-CREATE TABLE NPC (
-  id SERIAL,
-  PRIMARY KEY (id)
-) INHERITS (Actor);
-
-CREATE TABLE Area (
---  id SERIAL,
-  area INT NOT NULL,
-  PRIMARY KEY (area),
-  FOREIGN KEY (area) REFERENCES Name(id)
-);
-
-CREATE TABLE Log_File (
-  id SERIAL,
-  filename VARCHAR(512),
-  ts BIGINT NOT NULL, -- timestamp, ms past the epoch
-  fully_parsed BOOL NOT NULL DEFAULT FALSE,
-  PRIMARY KEY (id)
-);
-
-CREATE TABLE Combat (
-  id SERIAL,
-  -- timestamps (ts_*) are stored as ms past the epoch
-  ts_begin BIGINT NOT NULL,
-  ts_end BIGINT NOT NULL,
-  area INT NOT NULL,
-  logfile INT NOT NULL,
-  PRIMARY KEY (id),
-  FOREIGN KEY (area) REFERENCES Area(area),
-  FOREIGN KEY (logfile) REFERENCES Log_File(id)
-);
-
-CREATE TABLE Combat_Actor (
-  combat INT NOT NULL,
-  actor INT NOT NULL,
-  PRIMARY KEY (combat, actor),
-  FOREIGN KEY (combat) REFERENCES Combat(id),
-  FOREIGN KEY (actor) REFERENCES Actor(id)
-);
-
-CREATE TYPE Location AS (
-  x FLOAT,
-  y FLOAT,
-  z FLOAT,
-  rot FLOAT
-);
-
-CREATE TYPE Health AS (
-  current INT,
-  maximum INT
-);
-
-CREATE TABLE Event (
-  id SERIAL,
-  ts BIGINT NOT NULL, -- ms since epoch
-  source INT,
-  source_location Location,
-  source_health Health,
-  target INT,
-  target_location Location,
-  target_health Health,
-  ability INT,
-  action_noun INT NOT NULL,
-  action_verb INT NOT NULL,
-  action_details INT,
-  value_version VARCHAR(16),
-  value_base INT,
-  value_crit BOOL,
-  value_effective INT,
-  value_type INT,
-  value_mitigation_reason INT,
-  value_mitigation_effect_value INT,
-  value_mitigation_effect_value_name INT,
-  PRIMARY KEY (id),
-  FOREIGN KEY (source) REFERENCES Actor(id),
-  FOREIGN KEY (target) REFERENCES Actor(id),
-  FOREIGN KEY (ability) REFERENCES Name(id),
-  FOREIGN KEY (action_noun) REFERENCES Name(id),
-  FOREIGN KEY (action_verb) REFERENCES Name(id),
-  FOREIGN KEY (action_details) REFERENCES Name(id),
-  FOREIGN KEY (value_type) REFERENCES Name(id),
-  FOREIGN KEY (value_mitigation_reason) REFERENCES Name(id),
-  FOREIGN KEY (value_mitigation_effect_value_name) REFERENCES Name(id)
-);
-
-This seems like a reasonable first approximation. I'm not sure how to
-exactly use the Actor hierarchy, but the inheritance hierarchy matches
-how I think about it.
-
-Gotta work on creating the database in Postgres and then try parsing
-and inserting rows. Querying... that's something else. :)
-
 2025-08-02
 
 I think the value field needs to be parsed very differently. Rather
@@ -1819,3 +370,1485 @@ Huh, cppreference coroutine_handle has an example!
 
 Sweet, I used the example in cppreference with a little function of my
 own to make a file reader that works in a range for loop. Nice.
+
+2025-08-14
+
+OK, so how do I do this?
+
+Trying to 'createdb' (per Postgres documentation), but getting an
+error:
+
+$ createdb: error: database creation failed: ERROR:  permission denied to create database
+
+The tutorial indicates that I need to log into the account that's
+associated with the postgres server. Can't seem to do that. I found a
+user named 'postgres', but I don't know the password!
+
+$ su postgres
+Password: 
+su: Authentication failure
+
+Tried my favorite and some other obvious ones, like:
+
+admin
+administrator
+postgres
+postgresql
+jason
+
+I think I installed it as part of the SQL class, but I can't remember
+much about that. Let's go look.
+
+Huh, the notes from the postgres class look like this:
+
+$ sudo apt-get install postgresql postgresql-contrib
+
+Start the service running:
+
+$ sudo systemctl start postgresql.service
+
+Become the postgres user to avoid having to authenticate with the
+database as the superuser:
+
+$ sudo -i -u postgres
+
+Access the command-line client:
+
+$ psql
+
+Now I can make my user and database:
+
+CREATE USER jason WITH PASSWORD 'jason';
+CREATE DATABASE people WITH OWNER 'jason';
+
+Now get out of sudo and connect directly:
+
+$ psql people jason
+psql (16.3 (Ubuntu 16.3-0ubuntu0.24.04.1))
+Type "help" for help.
+
+people=>
+
+OK, that all seems reasonable. However, I'm guessing in order to use
+createdb I'll have to specify my user name somehow. Let's see.
+
+Yeah, createdb can specify the username:
+
+-U, --username  user name to connect as
+-W, --password  force password prompt
+
+$ createdb -WU jason
+Password: (entered jason)
+createdb: error: database creation failed: ERROR:  permission denied to create database
+
+So, still no joy. Let's try the suggestion from the class:
+
+$ sudo -i -u postgres
+[sudo] password for jason: 
+postgres@jason-ThinkPad-T580:~$ 
+
+OK, so now I'm the postgres user.
+
+postgres@jason-ThinkPad-T580:~$ psql
+psql (16.9 (Ubuntu 16.9-0ubuntu0.24.04.1))
+Type "help" for help.
+
+postgres=# SELECT * from USER;
+   user   
+----------
+ postgres
+(1 row)
+
+There's no 'jason' user like I expected? I wonder if I didn't actually
+do that.
+
+postgres=# CREATE USER jason WITH PASSWORD 'jason';
+ERROR:  role "jason" already exists
+
+Huh. So, it's a role and not in the USER table?
+
+Ah, there's a super-secret command that I found via:
+
+postgres=# \?
+
+\dg shows the roles
+
+                             List of roles
+ Role name |                         Attributes                         
+-----------+------------------------------------------------------------
+ jason     | 
+ postgres  | Superuser, Create role, Create DB, Replication, Bypass RLS
+
+Huh. Notice that 'jason' doesn't have any attributes, so it literally
+can't create databases. Ah-ha!
+
+Per the web:
+
+postgres=# ALTER ROLE jason WITH CREATEDB;
+ALTER ROLE
+postgres=# \dg
+                             List of roles
+ Role name |                         Attributes                         
+-----------+------------------------------------------------------------
+ jason     | Create DB
+ postgres  | Superuser, Create role, Create DB, Replication, Bypass RLS
+
+ Excellent. Trying via createdb again.
+
+$ createdb -WU jason
+Password:
+$
+
+No erros this time. Excellent.
+
+$ createdb -WU jason swtor_combat_explorer
+Password:
+$
+
+Ooh.
+
+$ pg_dump -WU jason
+Password: 
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)
+-- Dumped by pg_dump version 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- PostgreSQL database dump complete
+--
+
+$
+
+There is a 'jason' database.
+
+$ pg_dump -WU jason swtor_combat_explorer
+Password: 
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)
+-- Dumped by pg_dump version 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- PostgreSQL database dump complete
+--
+
+$
+
+There's also a 'swtor_combat_explorer' database.
+
+Let's try creating our tables one-by-one.
+
+$ psql
+psql (16.9 (Ubuntu 16.9-0ubuntu0.24.04.1))
+Type "help" for help.
+
+jason=> 
+
+Looks good. Now, how do I set the current database?
+
+jason=> \c swtor_combat_explorer
+You are now connected to database "swtor_combat_explorer" as user "jason".
+swtor_combat_explorer=> 
+
+OK, sweet. Notice that "database" and "schema" seemed to be used
+interchangably. Now let's create our first table!
+
+swtor_combat_explorer=> CREATE TABLE Name (
+  id BIGINT NOT NULL,
+  name VARCHAR (128),
+  PRIMARY KEY (id)
+)
+swtor_combat_explorer->
+
+Seemed to work. Actually, I hadn't finished the command yet! See the
+prompt went from => to -> (equals to dash). This means that I haven't
+completed the command. Let's try again.
+
+swtor_combat_explorer=> CREATE TABLE Name (
+  id BIGINT NOT NULL,
+  name VARCHAR (128),
+  PRIMARY KEY (id)
+);
+CREATE TABLE
+swtor_combat_explorer=>
+
+Better.
+
+swtor_combat_explorer=> \dt
+       List of relations
+ Schema | Name | Type  | Owner 
+--------+------+-------+-------
+ public | name | table | jason
+(1 row)
+
+swtor_combat_explorer=> 
+
+OK, I like it. How do I show the schema of a table?
+
+Note that Postgres doesn't seem to preserve capitalization - the
+relation is "name" not "Name" like I entered. Hmm.
+
+swtor_combat_explorer=> \d name
+                       Table "public.name"
+ Column |          Type          | Collation | Nullable | Default 
+--------+------------------------+-----------+----------+---------
+ id     | bigint                 |           | not null | 
+ name   | character varying(128) |           |          | 
+Indexes:
+    "name_pkey" PRIMARY KEY, btree (id)
+
+swtor_combat_explorer=> 
+
+So, this just relates a numeric ID to a string. ez-pz.
+
+Next table.
+
+swtor_combat_explorer=> CREATE TABLE Combat_Style (
+  id SERIAL,
+  name BIGINT NOT NULL,
+  PRIMARY KEY (id),
+  FOREIGN KEY (name) REFERENCES Name(id)
+);
+CREATE TABLE
+swtor_combat_explorer=>
+
+And how does it look?
+
+swtor_combat_explorer=> \d combat_style
+                            Table "public.combat_style"
+ Column |  Type   | Collation | Nullable |                 Default                  
+--------+---------+-----------+----------+------------------------------------------
+ id     | integer |           | not null | nextval('combat_style_id_seq'::regclass)
+ name   | bigint  |           | not null | 
+Indexes:
+    "combat_style_pkey" PRIMARY KEY, btree (id)
+Foreign-key constraints:
+    "combat_style_name_fkey" FOREIGN KEY (name) REFERENCES name(id)
+
+swtor_combat_explorer=>
+
+Nice. The 'nextval' stuff is the internal junk that implements a
+monotonically-increasing sequence suitable for an identifier (SERIAL).
+
+2025-08-13
+
+OK, I think the parsing task is pretty much done. I can go through
+hundreds of logs with gigabytes of data and not encounter a single
+parsing failure. Of course, I've also given up on some of the
+higher-level semantic extraction I was trying to embed. No matter,
+probably better left to client code anyway.
+
+Now I want to think about how to store this data in a database. Need
+to think about tables and fields now. Joy. SQL. Suck.
+
+Obvious tables:
+
+CREATE TABLE Version (
+  id INT UNIQUE NOT NULL,
+  creation TIMESTAMP NOT NULL
+);
+
+-- All of the names we've seen so far
+--
+-- This is an optimization to avoid storing strings in multiple tables.
+-- The 'id' field is directly from the input log entry and is guaranteed
+-- unique but is essentially a GUID.
+CREATE TABLE Name (
+  id BIGINT NOT NULL,
+  name VARCHAR (128),
+  PRIMARY KEY (id)
+);
+
+-- Because the Name primary key is a BIGINT, all FKs to it must also
+-- be FKs.
+
+-- These little tables that are really just FKs into Name are giving
+-- semantic meaning to the Name. We could also add an enumeration column
+-- to Name indicating the context for Name. I'm not sure if that's a
+-- better idea. But, the enumeration does mean I'd have to update the
+-- enumeration each time I wanted to add a new category of meaning,
+-- whereas this just requires adding a table. Hmm.
+CREATE TABLE Combat_Style (
+  name BIGINT NOT NULL,
+  PRIMARY KEY (name),
+  FOREIGN KEY (name) REFERENCES Name(id)
+);
+
+CREATE TABLE Advanced_Class (
+  id SERIAL,
+  name BIGINT NOT NULL,
+  style INT NOT NULL,
+  PRIMARY KEY (id),
+  FOREIGN KEY (name) REFERENCES Name(id),
+  FOREIGN KEY (style) REFERENCES Combat_Style(name)
+);
+
+CREATE TABLE Actor (
+  id SERIAL,
+  name BIGINT NOT NULL,
+  PRIMARY KEY (id),
+  FOREIGN KEY (name) REFERENCES Name(id)
+);
+
+-- Because PC's can change their class, we need another identifier to
+-- refer to the specific style/class used in a combat.
+
+-- NOTE: Initially I thought I could use the inherited 'id' column from
+-- Actor to be the primary key, but I had to list the 'id' directly in
+-- 'PC' to allow me to refer to it from Companion. Postgres says this:
+--
+-- NOTICE:  merging column "id" with inherited definition
+CREATE TABLE PC (
+  id SERIAL,
+  class INT NOT NULL,
+  PRIMARY KEY (id),
+  FOREIGN KEY (class) REFERENCES Advanced_Class(id)
+) INHERITS (Actor);
+
+CREATE TABLE Companion (
+  id SERIAL,
+  pc INT NOT NULL,
+  PRIMARY KEY (id),
+  FOREIGN KEY (pc) REFERENCES PC(id)
+) INHERITS (Actor);
+
+CREATE TABLE NPC (
+  id SERIAL,
+  PRIMARY KEY (id)
+) INHERITS (Actor);
+
+CREATE TABLE Area (
+--  id SERIAL,
+  area INT NOT NULL,
+  PRIMARY KEY (area),
+  FOREIGN KEY (area) REFERENCES Name(id)
+);
+
+CREATE TABLE Log_File (
+  id SERIAL,
+  filename VARCHAR(512),
+  ts BIGINT NOT NULL, -- timestamp, ms past the epoch
+  fully_parsed BOOL NOT NULL DEFAULT FALSE,
+  PRIMARY KEY (id)
+);
+
+CREATE TABLE Combat (
+  id SERIAL,
+  -- timestamps (ts_*) are stored as ms past the epoch
+  ts_begin BIGINT NOT NULL,
+  ts_end BIGINT NOT NULL,
+  area INT NOT NULL,
+  logfile INT NOT NULL,
+  PRIMARY KEY (id),
+  FOREIGN KEY (area) REFERENCES Area(area),
+  FOREIGN KEY (logfile) REFERENCES Log_File(id)
+);
+
+CREATE TABLE Combat_Actor (
+  combat INT NOT NULL,
+  actor INT NOT NULL,
+  PRIMARY KEY (combat, actor),
+  FOREIGN KEY (combat) REFERENCES Combat(id),
+  FOREIGN KEY (actor) REFERENCES Actor(id)
+);
+
+CREATE TYPE Location AS (
+  x FLOAT,
+  y FLOAT,
+  z FLOAT,
+  rot FLOAT
+);
+
+CREATE TYPE Health AS (
+  current INT,
+  maximum INT
+);
+
+CREATE TABLE Event (
+  id SERIAL,
+  ts BIGINT NOT NULL, -- ms since epoch
+  source INT,
+  source_location Location,
+  source_health Health,
+  target INT,
+  target_location Location,
+  target_health Health,
+  ability INT,
+  action_noun INT NOT NULL,
+  action_verb INT NOT NULL,
+  action_details INT,
+  value_version VARCHAR(16),
+  value_base INT,
+  value_crit BOOL,
+  value_effective INT,
+  value_type INT,
+  value_mitigation_reason INT,
+  value_mitigation_effect_value INT,
+  value_mitigation_effect_value_name INT,
+  PRIMARY KEY (id),
+  FOREIGN KEY (source) REFERENCES Actor(id),
+  FOREIGN KEY (target) REFERENCES Actor(id),
+  FOREIGN KEY (ability) REFERENCES Name(id),
+  FOREIGN KEY (action_noun) REFERENCES Name(id),
+  FOREIGN KEY (action_verb) REFERENCES Name(id),
+  FOREIGN KEY (action_details) REFERENCES Name(id),
+  FOREIGN KEY (value_type) REFERENCES Name(id),
+  FOREIGN KEY (value_mitigation_reason) REFERENCES Name(id),
+  FOREIGN KEY (value_mitigation_effect_value_name) REFERENCES Name(id)
+);
+
+This seems like a reasonable first approximation. I'm not sure how to
+exactly use the Actor hierarchy, but the inheritance hierarchy matches
+how I think about it.
+
+Gotta work on creating the database in Postgres and then try parsing
+and inserting rows. Querying... that's something else. :)
+
+2025-08-16
+
+Brahms day! But a few database things as well. Probably should use the
+environment variables for connecting/authenticating to the database.
+
+PGDATABASE=swtor_combat_explorer
+PGUSER=jason
+PGPASSWORD=jason
+
+Gotta get ready.
+
+2025-08-17
+
+Brahms was awesome.
+
+Time to add pg to the CMake file and create a new executable to interact with pg and the parser library.
+
+Tryuing to use libpqxx, a C++ API that sits on top of libpq, the standard C-client interface. Not working,
+however. Installed libpqxx-dev and libpq-dev and then modified CMake per suggestion.
+
+However, doesn't work because because libpqxx looks for std::source_location for some reason but c++20 doesn't have it -
+my code is c++20. So, gonna switch over to fetchcontent.
+
+OK, got it going. Looking good. Runs and I can connect to the DB. Let's see if I can query the version table, which
+should have a row.
+
+Got it! It works! Yay.
+
+2025-08-23
+
+pqxx::work is just an alias for pqxx::transaction<>. Too bad that's not documented anywhere.
+
+2025-09-04
+
+Yeah, lots of time has gone by. Getting more familiar with pqxx, lots of of learning and failing. :/
+
+IMPORTANT: In SELECT statements, DON'T surround the result column list in '()'! This causes pqxx to NOT PARSE THE
+RESULT. So, you just get a single column back and it's only useful as null-terminated string. Ugh, that cost me days of
+pain.
+
+Turns out more info here: https://stackoverflow.com/questions/55320143/do-you-need-surrounding-parantheses-in-postgres-select-statement
+
+So, if you put the parens in there, you're indicating you want a composite value value in a single column. The parens
+form a "row constructor or "composite value." I was getting back a row with one column of a "row" type. I had no idea
+had to deal with that.
+
+After futzing around
+
+2025-09-06
+
+OK, finally getting on a roll. I think I have a better handle on pqxx and PostgreSql.
+
+NOTE: Don't try to insert a value into a SERIAL field. I don't think the database knows to update the "get next value"
+so eventually i think we get a clash.
+
+I'm actually finding bugs with these tests, yay yay yay.
+
+2025-09-10
+
+Making good progress, but slowed by my stupid car problems. :/
+
+2025-09-13
+
+Stupid car problems, choir party - yesterday was fun, actually. No programming though. Today I'm back at it. Finished
+add_pc_class and writing the test. Getting a weird error:
+
+unknown file: Failure
+C++ exception with description "ERROR:  input of anonymous composite types is not implemented
+CONTEXT:  unnamed portal parameter $2 = '...'
+" thrown in the test body.
+
+After finding it and wrapping with a catch and rethrowing, I see this:
+
+OOPS1
+ERROR:  input of anonymous composite types is not implemented
+CONTEXT:  unnamed portal parameter $2 = '...'
+
+SELECT id FROM Advanced_class WHERE (style, advanced_class) = ($1, $2)
+unknown file: Failure
+C++ exception with description "ERROR:  input of anonymous composite types is not implemented
+CONTEXT:  unnamed portal parameter $2 = '...'
+" thrown in the test body.
+
+2025-09-22
+
+Car problems worked out, yay. A lot (lot lot) of time on add PC Actor function and its tests. I feel like I'm
+overthinking this and that's why it's so complicated. Every log seems to start with
+
+AreaEntered
+DisciplineChanged
+
+So, it's only for the first line that I won't know the class. You can't change class during combat so all I really need
+to handle is remembering the actor row id of the last time I saw the pc. When combat starts I could even just search for
+the most recent actor row that has the PC's name. Easy enough.
+
+I'm seriously making this more complicated than it needs to be. :/ I'm pretty sure that all I need to remember is the
+most recent actor row ID of the actor's name. But... maybe not. It looks like the logs DO have instances where the first
+thing I see of a PC is NOT their class. :/ Rats!!
+
+So I think I'll keep it simpl and use m_pcs and just update it when a new row is created in Actor.
+
+2025-09-26
+
+One possibility - We could flatten the text event into a single csv row with empty fields. Make it super easy to
+parse. Like an intermediate representation. Another output like the database. Advantage: easier to read. Disadvantage -
+more code to maintain. Advantage - other programs could work with this text more easily than interacting with the
+database, which requires Postgres, blah blh blah. Disadvantage: reading csv might be slower and client would still have
+to keep track of actors. But not a huge deal.
+
+Wouldn't depend on a library, either, could do all csv parsing by hand since no string in the log can ever contain a
+comma. Hmm.
+
+2025-09-27
+
+OK, spend some time to avoid running clang-tidy all over again.
+
+2025-10-01
+
+OMG, I think I just got rid of clang-tidy for all time. Well, I didn't see it running in a build.  So much faster. Let's
+try changing just one file.
+
+One problem of using the language server, of course, is that it runs clang-tidy, too.
+
+No, I still see tidy being run. AARGH. Where? Why? ::sigh::
+
+Wait. How could I possibly reparse the same log? How I would I know lines had been parsed and populated and which
+hadn't? I'd have to search every line for the same timestamp and some other unique combination of attributes to see if
+it existed. If this doesn't work right, I'd end up repopulating the entire file again, essentially blowing up the Event
+table with duplicated garbage. Ugh.
+
+OK, that's a problem for another time. But it will need to be solved. Easiest way seems to be by adding a logfile
+attribute to Event. Then when a reparse was requested, we'd just blow everything, all events and combats and combat
+actors related to that logfile and then reparse from scratch. I like that.
+
+Dammit, so many things to do. :/
+
+2025-10-13
+
+Things are apace. Almost done with the db parser. I was able to create ParsedLogLine and have it populate an Event and
+all of the vairous sub-tables. Yay.
+
+I think I should rename the advanced_class table to be more up with the current nomenclature.
+
+Interestingly, the game and the documentation is schizophrenic. The website talks about the old "class" and "advanced
+class" terms, but the game itself talks about "Combat Style" and "Discipline." And the log talks about "Discipline
+Changed" and doesn't use "class/advanced class" anywhere. Joy.
+
+I think the table should be "Class" and the attributes should be "style" and "discipline." Makes it easier to get a
+handle on it, IMHO.
+
+I also created a new table that holds an ability name and a reference to a class. The ability is intended to be a unique
+ability only available to the associated class. This will allow the DB to store a PC's class even if we never see a
+DisciplineChanged event, which is common in some situations, like PvP or world activities, where not everybody's grouped
+up.
+
+In addition, I want to prepopulate the Class (was Advanced_Class) table with the current style/disciplines for PCs. No
+reason to populate this table from the log. Just gotta do it.
+
+Oh, I just removed clang-tidy entirely from the build. It was so slow and I get tidy from the lsp, so not a big
+deal. IT'S SO MUCH FASTER NOW.
+
+I'm gonna try parsing an entire log soon!! Yikes!! Then I gotta work on some searches to find interesting things... heh
+heh heh.
+
+Should I add a Logfile attribute to the Event table? That way you can always relate a log entry to the logfile it came
+from and vice-versa. Yeah, I think it's a good idea. I have the logfile attribute in the Combat table, but there are a
+lot of log entries that fall outside of combat, and those currently can't be related to a specific logfile.
+
+But... does that matter? I'm not sure it does. The only reason we care about logfile even now is that we can keep track
+of its parsing status via the "fully_parsed" attribute. Theoretically, once a logfile is fully parsed we can just ignore
+a request to parse it again and save a ton of time.
+
+In the end, I don't think it's worth doing anything to Event. Let's leave it the way it is. Who knows if this will even
+be relevant in the end.
+
+The db populator executable needs a lot of work. I haven't touched it in over a month since I moved the population code
+into its own library.
+
+2025-10-25
+
+Fuck, the logfile is in CP-1252 (WINDOWS-1252) encoding and the database uses UTF-8 by default. Fuck fuck.
+
+Use SET client_encoding = WIN1252; after creating database. Oops, didn't work. Still same error.
+
+Want entire DB to be WIN1252.
+
+FUCK ME.
+
+create database swtor_combat_explorer with encoding 'WIN1252' LC_COLLATE='en_US.WIN1252' LC_CTYPE='en_US.WIN1252' TEMPLATE=template0;
+
+Didn't work.
+
+create database swtor_combat_explorer with encoding 'WIN1252' LC_COLLATE='C' LC_CTYPE='C' TEMPLATE=template0;
+
+This seemed to have worked.
+
+2025-10-27
+
+Turns out you can have two ExitCombats in a row!
+
+File: combat_2025-03-22_17_47_15_992759.txt
+
+93027 and 93062
+
+No intervening EnterCombat. Weird.
+
+There's only 500ms or so between these lines.
+
+It looks like it ends when I die and then it ends again when the final boss dies. Hmm.
+
+Populator can't handle that and crashed. What should we do in that situation?
+
+...43.720: ExitCombat
+...43.805: Boss dies
+...44.215: ExitCombat
+
+Nobody died in-between or immediately. I dunno what happened. I'll log an error and ignore it.
+
+Going to try Google's "gflags" library for command line parsing. Who knows?
+
+Can't get it to build via FetchContent. Getting this error:
+
+CMake Error (dev) at build/dev/_deps/gflags-src/CMakeLists.txt:430 (gflags_define):
+  uninitialized variable 'LIB_SUFFIX'
+
+Tried running ccmake in the gflags dir and 'c' for configure and then try to generate via cmake - no joy.
+
+Had to set LIB_SUFFIX in gflag's CMakeLists.txt. Also had to update the required min version to 3.5 due to
+deprecation. Sheeh. Ugh, also had to fix a floating comparison in a test I don't care about in gflags. Ugh.
+
+
+
+2025-10-30
+
+Added logic to specify how to handle populating logfiles that have already been parsed and pushed into the
+database. That's kind of nice.
+
+Added profiling via gprof to my code in the CMakeLists.txt like so:
+
+target_compile_options(
+  swtor_combat_populate_db_exe
+  PRIVATE -pg
+)
+
+target_link_options(
+  swtor_combat_populate_db_exe
+  PRIVATE -pg
+)
+
+Now I'm running the populator (which also exercises the parser) against some logfiles. No idea what this will look
+like. This will produce gmon.out.
+
+We get an analysis via
+
+gprof swtor_combate_populate_db_exe gmon.out > analysis.txt
+
+Note that I tried gprofng, but it doesn't actually hack up the executable and just samples (somehow) the state of the
+execution and uses that to infer timing, but that didn't seem very useful at all to me. Nice that it didn't require
+recompilation and a big slow-down, but not much actual data.
+
+To think about:
+
+1) Start pushing up to GitHub.
+2) Make a container for the build environment.
+3) Add CI/CD via github actions.
+4) Start using github for doing PRs, etc.
+5) Analyze gprof results
+6) Performance optimizations, if necessary.
+
+OK, run finally finished. Around 330k log lines parsed and populated.
+
+Highest cost of my calls:
+
+DbPopulator::populate_from_entry - makes sense, this wraps all other populateion calls
+DbPopulator::add_name_id - as I expected, this is the most expensive because it's called so often
+    in fact, it's called 1,309,195 times for 330k entries. Wow, that's a lot. Easy to optimize via cache.
+DbPopulator::add_action - not surprising, called on every single event. Easy enough to cache this, too.
+
+Learned how to visualize using gprof2dot. Via:
+
+gprof build/dev/swtor_combat_populate_db gmon.out | gprof2dot --strip | dot -Tpng -o gprof.png
+
+Very handy. '--strip' gets rid of all the cruft (function params, template shit, etc.). Very nice. Basically told me the
+same thing but the callgraph is nice.
+
+Also a recommendation to use 'callgrind' from valgrind instead of gprof. Not sure how callgrind works. Maybe look that
+up.
+
+But, the result I see from here is that adding the Name and Action cache would be handy.
+
+Bedtime.
+
+2025-10-31
+
+Trying to push to github, but no luck. So, github account is "jbtiller". email is jtiller@fastmail.fm.
+
+I didn't have any ssh keys. Created a key, github_jtiller_fastmail_fm_jbtiller_ed25519, and added to github. Still no
+love.
+
+I can test it with ssh via
+
+ssh -T git@github.com -i ~/.ssh/github_jtiller_fastmail_fm_jbtiller_ed25519
+
+which worked. But not connected to git yet.
+
+Can't find anyway on git command line 'push' to specify which key to use.
+
+Added config in ~/.ssh:
+
+Host github.com
+  HostName github.com
+  IdentityFile ~/.ssh/github_jtiller_fastmail_fm_jbtiller_ed25519
+
+Made sure ~/.ssh/config had 600 perms.
+
+Now it's telling me this:
+
+hostkeys_find_by_key_hostfile: hostkeys_foreach failed for /home/jason/.ssh/known_hosts: Permission denied
+The authenticity of host 'github.com (140.82.116.4)' can't be established.
+ED25519 key fingerprint is SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU.
+This key is not known by any other names.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? 
+
+I say "yes" and it w3orks!
+
+TODO: Rebuilt with profiling enabled. Run against some logfiles (copy exact command line here). Then store results in a
+subdirectory. Then we can do some local caching (add_name_and_id, add_action, etc.) and see how things change.
+
+2025-11-01
+
+Made a psql script to create the database. Script is makedb.txt. To use:
+
+$ psql -f makedb.txt
+
+(This assumes a bunch of things, like PostgreSQL is installed, you have an account associated with the current user,
+etc. etc.)
+
+Let's try to flesh out the command-line searcher I started last week.
+
+Ooh, created an issue. I love issues. I think I can link the branch to the issue? Not sure how. Oh, you'd create the
+branch, then create a PR for it and then link that PR to the issue. I can also just create the branch from the issue
+page and pull to get it.
+
+That worked well and gives me a consistent naming scheme between the branch and the issue. Good.
+
+Time for lunch.
+
+Going to do a run with profiling enabled on this log file:
+
+test/logs/combat_2025-05-07_19_07_03_273505.txt
+
+$ wc -l test/logs/combat_2025-05-07_19_07_03_273505.txt
+  101798 test/logs/combat_2025-05-07_19_07_03_273505.txt
+
+$ grep EnterCombat test/logs/combat_2025-05-07_19_07_03_273505.txt | wc -l
+19
+
+$ BL_LEVEL=warning ./build/dev/swtor_combat_populate_db test/logs/combat_2025-05-07_19_07_03_273505.txt >& populate.out
+
+
+2025-11-02
+
+Leftover from yesterday:
+
+Going to do a run with profiling enabled on this log file:
+
+test/logs/combat_2025-04-20_19_52_15_159478.txt
+
+$ wc -l test/logs/combat_2025-04-20_19_52_15_159478.txt
+336290 test/logs/combat_2025-04-20_19_52_15_159478.txt
+
+$ grep EnterCombat test/logs/combat_2025-04-20_19_52_15_159478.txt | wc -l
+56
+
+$ BL_LEVEL=warning ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate.out
+
+$ wc -l populate.out
+populate.out 336457
+
+swtor_combat_explorer=> select count(*) from event;
+ count  
+--------
+ 336290
+
+Matches perfectly with # of lines in the raw event log. yay.
+
+Why are there more lines in populate.out than rows in the event table?
+
+$ grep -v "Parsing log line" populate.out | wc -l
+167
+
+All I see in these lines are "Did not encounter a double character. Skipping." Hmm.
+
+So, no other errors or warnings. Nice. And this ONLY happens in the "AreaEntered" action that includes the two sentinels
+(he3001) and <v7.0.0b>. Must be the second, since this can be parsed as a double. Let's see. Yeah, not gonna fix
+that. No reason - very simple and occurs infrequently.
+
+Initial timestamp in populate.out:
+
+14:20:54.437478
+
+Final timestamp in populate.out:
+
+15:11:18.752620
+
+About 50m 22s (3022s) for 336290 records. Or, a rough estimate of parsing/population time per event:
+
+0.008s
+
+Ooh, 8ms per event - that's f'ing slow.
+
+swtor_combat_explorer=> select count(*) from event;
+ count  
+--------
+ 336290
+
+Matches perfectly with # of lines in the raw event log. yay.
+
+Here's how we redirect the psql REPL output to a file:
+
+swtor_combat_explorer=> \o populate_events.txt
+swtor_combat_explorer=> select * from event order by ts;
+swtor_combat_explorer=> \o
+
+The "\o file" turns on redirection in the psql REPL and then empty "\o" turns it off. Handy.
+
+Let's rebuild with profiling off and try again.
+
+OK, rebuilt and re-run.
+
+$ BL_LEVEL=warning ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate.out
+
+Interesting question: How many DB transactions do I make? Let's could these up. Huh, I don't see how to do it. :/
+
+OK, some non-profiling results:
+
+First entry timestamp:
+
+15:25:45.962758
+
+Last entry timestamp:
+
+16:17:59.882762
+
+Took about 52m 14s
+
+That makes no sense - it's *slower* than with profiling on. Fuck that.
+
+Oh, well, let's get back to the searching stuff.
+
+OK, got the PCs in combat working. But... I have a problem. The combat is showing just the area name, like "R-4 anomaly"
+and nothing more. I think I need to add some more info to the populator so it shows the boss in the Combat table. Hmm.
+
+So, what would this need?
+
+When we first enter combat, we have the area only but not the boss.
+
+Well, I'd need a list of the names of bosses and then when I encounter the boss during combat, add that boss to the
+combat entry.
+
+So, just make a list of bosses and put that in another database table?
+
+Too much for for now. Make a TODO.
+
+Let's lookat more searches. Issue has info:
+
+    Show all abilities on a per-class basis
+    Given a combat ID and a PC ID, show all the abilities used by that PC in that combat
+    Show all classes
+    Show a count of the number of combats in each area
+
+Getting there. I have these so far:
+
+DEFINE_bool(all_actions,         false, "Show all actions");
+DEFINE_bool(all_action_verbs,    false, "Show just the unique verbs in actions");
+DEFINE_bool(all_class_abilities, false, "Show all abilities per class");
+DEFINE_bool(all_classes,         false, "Show all classes");
+DEFINE_bool(all_combats,         false, "Show all combats");
+DEFINE_bool(pcs_in_combats,      false, "Show all PCs in all combats");
+
+More to do, but that's a start.
+
+I'm not thrilled with gflags. It feels pretty old and unmaintained and clunky. I also really don't like the usage
+format. What's boost::options up to?
+
+2025-11-03
+
+OK, created a ticket for doing some performance profiling. Let's build with profiling on:
+
+$ ccmake build/dev
+
+Turn ENABLE_PROFILING ON
+
+Then 'c' to configure and 'g' to generate.
+
+$ cmake --build --prest=dev
+
+Here's where we are:
+
+c775b8b (HEAD -> 3-explore-local-caching-to-speed-up-population, ...)
+
+To detect that an executable has been built against gprof, the internet recommends searching the symbols for
+'mcount'. Here's what I see:
+
+$ readelf -sWC build/dev/swtor_combat_populate_db | grep mcount
+   121: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND mcount@GLIBC_2.2.5 (5)
+  4263: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND mcount@GLIBC_2.2.5
+
+-s: Show symbols
+-W: Allow the output to exeed 80 characters
+-C: Demangle symbols
+
+So, yes, we did link in profiling.
+
+Let's do a fresh run.
+
+$ psql -f makedb.txt
+
+$ ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate_profiling_on_c775b8b.txt
+
+Oh, CRAP. Didn't change the log level, so it's taking a looooong time.
+
+Let's turn off logging entirely:
+
+$ BL_LEVEL=fatal ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate_profiling_on_c775b8b.txt
+
+OK, it's going. Wait, I want to time the run externally.
+
+$ psql -f makedb.txt
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate_profiling_on_c775b8b.txt
+
+$ cat populate_profiling_on_c775b8b.txt
+675.88user 75.89system 48:43.76elapsed 25%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+1112outputs (0major+951minor)pagefaults 0swaps
+
+$ ls -l gmon.out 
+-rw-rw-r-- 1 jason jason 567076 Nov  3 14:41 gmon.out
+
+$ cd profiling
+ ls -lart
+total 568
+-rw-rw-r--  1 jason jason 567076 Nov  3 14:41 gmon_c775b8b.out
+-rw-rw-r--  1 jason jason    139 Nov  3 14:41 populate_profiling_on_c775b8b.txt
+
+Generate a gprof analysis:
+
+$ gprof ../build/dev/swtor_combat_populate_db gmon_c775b8b.out > gprof_analysis_c775b8b.txt
+
+Let's look at the analysis:
+
+Each sample counts as 0.01 seconds.
+  %   cumulative   self              self     total           
+ time   seconds   seconds    calls  ms/call  ms/call  name 
+...
+  0.92     12.40     1.42 114339665    0.00     0.00  std::__cxx11::basic_string<
+...
+  0.58     17.34     0.89                             pqxx::connection::exec_params
+...
+  0.41     24.68     0.62 128647510    0.00     0.00  auto LogParserHelpers::get_next_field
+...
+  0.13     84.58     0.20  1308899     0.00     0.01  DbPopulator::add_name_id(LogParserTypes::NameId const&)
+
+Most calls: get_next_field 12 million times. Holy crap. Took up 0.4%
+
+'time' said it toopk 48:43.76s for the entire run.
+
+Let's look at the gprof2dot analysis:
+
+$ gprof build/dev/swtor_combat_populate_db gmon.out | gprof2dot --strip | dot -Tpng -o gprof.png
+
+Some interesting takeaways from the dependency graph:
+
+1. pqxx query01 takes 4.89% of the time.
+2. The DbPopulator constructor took 9.25% of the time? What??
+3. _fini (shutdown) took 9% of the time? These numbers can't be right.
+
+I don't understand that - almost nothing in the populators. Most of them aren't even listed.
+
+Dammit, something's not right. Fuck this. Gonna add my own shitty profiler.
+
+OK, added class that captures time on entry and exit from a function. Then output in the top-level populator and I see this:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Time taken by DbPopulator constructor: 24
+Scope: DbPopulator::add_name_id
+    # calls: 40013, total ns of all calls: 14866478954, ns/call: 371541
+6.04user 1.58system 0:43.05elapsed 17%CPU (0avgtext+0avgdata 11392maxresident)k
+0inputs+0outputs (0major+611minor)pagefaults 0swaps
+
+Oh, I limited the number of line we process to 10k to make my life easier.
+
+Geez, really, 371ms per call? We can do better than that, I bet. First, a cheesy implementation.
+
+Note that the sum of all calls is 14.87s, or about a 4th of the entire time. Is that right?
+
+OK, let's rebuild without profiling and see how we do.
+
+$ ccmake build/dev
+c then e then g
+
+$ cmake --build --preset=dev && ctest --preset=dev
+
+$ readelf -sWC build/dev/swtor_combat_populate_db | grep mcount | wc -l
+0
+
+No profiling
+
+$ psql -f makedb.txt
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt >& populate_profiling_off_c775b8b.txt
+
+$ psql -d swtor_combat_explorer -c 'select count(*) from event;'
+ count  
+--------
+ 145986
+(1 row)
+
+Done.
+
+cat populate_profiling_off_c775b8b.txt
+304.42user 76.11system 42:11.12elapsed 15%CPU (0avgtext+0avgdata 11392maxresident)k
+0inputs+0outputs (0major+609minor)pagefaults 0swaps
+
+Hmm, 6 minutes faster.
+
+Added some caching. Just a simple std::map that maps name UUIDs to Name row IDs. Let's see how this does.
+
+First a run without profiling but with my dumb measurement in place.
+
+$ psql -f makedb.txt
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 40013, total ns of all calls: 1047626172, ns/call: 26182
+5.88user 0.88system 0:36.36elapsed 18%CPU (0avgtext+0avgdata 11264maxresident)k
+0inputs+0outputs (0major+613minor)pagefaults 0swaps
+
+Yes, we just reduced the time by a factor of more than 10x. That's a win. :)
+
+10001 events...
+
+275 events per second. That's a helluva lot better!!
+
+There are around 4 add_name_id() calls per event row. That's quite nice.
+
+Let's take off the 10,000 record limiter and do the entire file. Here we go! Should take around 1,221 seconds, or 20 minutes.
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Time taken by DbPopulator constructor: 8ms
+Scope: DbPopulator::add_name_id
+    # calls: 1308899, total ns of all calls: 9634986575, ns/call: 7361
+288.71user 48.40system 36:57.44elapsed 15%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+0outputs (0major+630minor)pagefaults 0swaps
+
+Took off about 5 minutes, or around 1/9 (11.1%) of the total runtime. That's not bad. But not great. How can I do better?
+
+2025-11-04
+
+OK, I see these results after caching Name accesses in add_name_id using the first 10,001 log entries:
+
+no caching:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Time taken by DbPopulator constructor: 24
+Scope: DbPopulator::add_name_id
+    # calls: 40013, total ns of all calls: 14866478954, ns/call: 371541
+6.04user 1.58system 0:43.05elapsed 17%CPU (0avgtext+0avgdata 11392maxresident)k
+0inputs+0outputs (0major+611minor)pagefaults 0swaps
+
+w/simple Name caching:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 40013, total ns of all calls: 1047626172, ns/call: 26182
+5.88user 0.88system 0:36.36elapsed 18%CPU (0avgtext+0avgdata 11264maxresident)k
+0inputs+0outputs (0major+613minor)pagefaults 0swaps
+
+add_name_id:
+
+-cache:  26.18 us/call
++cache: 371.54 us/call
+
+Total run timing:
+
+-cache: 36.36m
++cache: 43.05m
+
+Let's add another measurement. Let's measure the amount of time we spend in parsing the event and the amount of time we
+spend populating the database. Let's do 20k rows this time.
+
+OK, added measurements around the parser's parse_line() entrypoint and the populator's populate_from_entry()
+entrypoint. Here's what I see.
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 79888, total ns of all calls: 1316509998, ns/call: 16479
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 4177049579, ns/call: 208852
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 68004610889, ns/call: 3400230
+11.94user 1.94system 1:12.46elapsed 19%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+0outputs (0major+621minor)pagefaults 0swaps
+
+So:
+
+add_name_id:            16.5 us/call
+parse_line:            208.9 us/call
+populate_from_entry: 3,400.2 us/call
+
+Wow.
+
+Where is that time going? More measurements.
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 79888, total ns of all calls: 1362654713, ns/call: 17057
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 103244251, ns/call: 1454144
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 4223278368, ns/call: 211163
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 69845201809, ns/call: 3492260
+12.02user 1.92system 1:14.36elapsed 18%CPU (0avgtext+0avgdata 11392maxresident)k
+0inputs+0outputs (0major+619minor)pagefaults 0swaps
+
+Ooh. add_pc_class is slow. Best thing about it is it doesn't use add_name_id at all. Bad thing is that it's not called
+very often. :/ We can cache that!
+
+Key type will need to be a tuple.
+
+After caching add_pc_class:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 79872, total ns of all calls: 384643390, ns/call: 4815
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 10807023, ns/call: 152211
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 3954876191, ns/call: 197743
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 63577865887, ns/call: 3178893
+11.13user 1.64system 1:07.83elapsed 18%CPU (0avgtext+0avgdata 11136maxresident)k
+0inputs+0outputs (0major+614minor)pagefaults 0swaps
+
+About a 10x speedup. So, we have:
+
+add_pc_class:
+  -caching: 1,454.14us/call
+  +caching: 142.2us/call
+
+total:
+  -caching: 1:14.36
+  +caching: 1:07.83
+
+But... I need a bigger fish to fry.
+
+Ah, add_action!
+
+Let's profile add_action first. Before caching add_action:
+
+How weird. I got a crash. Signal 8 - floating point error?? Oh, sum probably got too large. Don't print the average and
+see what happens.
+
+Oh, no, oops. There are 2 add_actions and I instrumented the one that's never called. Oops. Fixt hat!
+
+OK, here's what we get without caching on add_action
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 79888, total ns of all calls: 1429530198, ns/call: 17894
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 28984957, ns/call: 408238
+Scope: DbPopulator::add_action
+    # calls: 20000, total ns of all calls: 14837079234, ns/call: 741853
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 4187727149, ns/call: 209386
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 69275981237, ns/call: 3463799
+12.07user 1.90system 1:13.73elapsed 18%CPU (0avgtext+0avgdata 11392maxresident)k
+0inputs+0outputs (0major+612minor)pagefaults 0swaps
+
+So, 741.85 us/call. Now, with caching. Added caching to add_action. And here we go!
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 40865, total ns of all calls: 1455509265, ns/call: 35617
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 32467426, ns/call: 457287
+Scope: DbPopulator::add_action
+    # calls: 20000, total ns of all calls: 2046636890, ns/call: 102331
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 5183463599, ns/call: 259173
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 64978259834, ns/call: 3248912
+12.72user 1.65system 1:10.50elapsed 20%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+0outputs (0major+625minor)pagefaults 0swaps
+
+Results:
+
+add_action:
+  -caching: 741.9us/call
+  +caching: 102.3us/call
+
+total:
+  -caching: 1:13.73
+  +caching: 1:10.50
+
+Eh, definitely diminishing returns. The timing seems odd. Consider:
+
+Total parsing: 5.183463599s
+Total populating: 64.978259834s
+
+So, almost all the time is taken up in populating, as is to be expected.
+
+Of the functions I've "profiled" so far, I see (with caching):
+
+add_name_id total: 1.455509265s
+add_pc_class total: .324674260s
+add_action total:  2.046636890s
+
+These are very low numbers. Where is all the time coming from?
+
+Actors are painfully slow, too. How about them.
+
+Without caching, I see these measurements:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 40865, total ns of all calls: 1491644982, ns/call: 36501
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 29181147, ns/call: 411002
+Scope: DbPopulator::add_action
+    # calls: 20000, total ns of all calls: 2024325477, ns/call: 101216
+Scope: DbPopulator::add_pc_actor
+    # calls: 28095, total ns of all calls: 263111719, ns/call: 9365
+Scope: DbPopulator::add_npc_actor
+    # calls: 11621, total ns of all calls: 9064179454, ns/call: 779982
+Scope: DbPopulator::companion_actor
+    # calls: 21, total ns of all calls: 24001785, ns/call: 1142942
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 5159563056, ns/call: 257978
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 64406116729, ns/call: 3220305
+12.60user 1.54system 1:09.89elapsed 20%CPU (0avgtext+0avgdata 11264maxresident)k
+0inputs+0outputs (0major+624minor)pagefaults 0swaps
+
+Wow, these are interesting
+
+add_pc_actor:  0.263111719s total
+add_npc_actor: 9.064179454s total, 780us per call
+
+This kinda makes sense - add_pc_actor is mostly concernted the actor's class (cached) and name/id (cached).
+
+Let's try npc actor. That will again need two items in the key tuple - name, instance. Hmm.
+
+OK, results from caching the add_npc_actor:
+
+$ BL_LEVEL=fatal time ./build/dev/swtor_combat_populate_db test/logs/combat_2025-04-20_19_52_15_159478.txt
+Scope: DbPopulator::add_name_id
+    # calls: 29310, total ns of all calls: 1513360733, ns/call: 51632
+Scope: DbPopulator::add_pc_class
+    # calls: 71, total ns of all calls: 30869847, ns/call: 434786
+Scope: DbPopulator::add_action
+    # calls: 20000, total ns of all calls: 2197425464, ns/call: 109871
+Scope: DbPopulator::add_pc_actor
+    # calls: 28095, total ns of all calls: 243731566, ns/call: 8675
+Scope: DbPopulator::add_npc_actor
+    # calls: 11621, total ns of all calls: 309915206, ns/call: 26668
+Scope: DbPopulator::companion_actor
+    # calls: 21, total ns of all calls: 29489017, ns/call: 1404238
+Scope: parse_line
+    # calls: 20000, total ns of all calls: 5675293912, ns/call: 283764
+Scope: populate_from_entry
+    # calls: 20000, total ns of all calls: 59263380004, ns/call: 2963169
+12.27user 1.30system 1:05.32elapsed 20%CPU (0avgtext+0avgdata 11520maxresident)k
+0inputs+0outputs (0major+628minor)pagefaults 0swaps
+
+add_npc_actor:
+  -cache: 9.064179454s total, 780us per call
+  +cache: 0.309915206s total: 26.7us/call
+
+Another nice improvement, although I don't entirely understand the final number:
+
+total:
+  -add_npc_actor cache: 1:09.89
+  +add_npc_actor cache: 1:05.32
+
+populate_from_entry:
+  -cache: 64.406116729s, 3.220305 ms/call
+  +cache: 59.263380004s, 2.963169 ms/call
+
+None of the other actors are worth caching - add_pc_actor is already cached and add_companion_actor is only called 21
+times. How often do you have your comps out in raids? never.
+
+That may be it for our caching improvements. They were worthwhile. Let's commit these and try a test of the measurements
+without the caching.
+
+Later - gotta practice.
+
+2025-11-05
+
+What would a cache abstraction look like?  Basically, there are three things that can happen in our typical situation:
+
+1. The key is found in the cache. Return the value.
+2. The key is not found in the cache. Check the database.
+3. The key is found in the database. Return the value.
+4. The key is not found in the database. Add key to database and return value.
+
+Essentially, the abstraction looks like:
+
+1. A way to check the cache.
+2. A way to update the cache.
+3. A way to check the database.
+4. A way to insert into the database.
+
+Kind of like a strategy pattern. The strategy is:
+
+Check if key is in cache.
+If key in cache:
+    Return value
+Check if key in database.
+If key in database:
+    Return value
+Add key to database
+Return value
+
+Stuff to think about.
+
+This is a waste of time. The database is not the important part. Move on.
+
+Fuck the unit tests for the cache. I'm tired.
+
+Template on key, value
+class Cache
+    cache holds map.
+
+Cache add(
+    key
+    check database string
+    params to check database query
+    func to add to database
+) returns V value
+
+cache variable: template type, std::map<K,V>
+key: template type, K key
+ check database: string query and pqxx::params
+func to add to database: lambda that does other adds (name_id, etc.)
+
+Nope, don't care. Not doing this. Wasting my time.
+
+I think I need to build some in-memory structures that could be used by plugins. 
+
+2025-11-06
+
+OK, let's do some statistics! Some obvious things:
+
+DPS
+HPS
+DTPS
+Instantaneous damage (over recent period)
+
+2025-11-07
+
+Interesting. The stats code ends up needing to have very similar functions because stats needs to maintain similar data
+structures. Huh.
+
+Hmm, does the stats class need to always exist or only at combat start? Hmm.
+
+Maybe other classes to track party state - what area we're in, what PCs we've seen, what effects are on toons, etc.
+
+Hmm. I kinda like that. Very simple classes. Hmm.
+
+Let's dump all the logs into the database and do some querying. I want to see things like effects.
+
+NOTE, here are are all of the event action nouns I see in a million or so events. Oh, no Event actions have a details
+field.
+
+ Event | AbilityActivate                     | n/a
+ Event | AbilityCancel                       | n/a
+ Event | AbilityDeactivate                   | n/a
+ Event | AbilityInterrupt                    | n/a
+ Event | Crouch                              | n/a
+ Event | Death                               | n/a
+ Event | EnterCombat                         | n/a
+ Event | EnterCover                          | n/a
+ Event | ExitCombat                          | n/a
+ Event | FailedEffect                        | n/a
+ Event | FallingDamage                       | n/a
+ Event | LeaveCover                          | n/a
+ Event | ModifyThreat                        | n/a
+ Event | NoLongerSuspicious                  | n/a
+ Event | Revived                             | n/a
+ Event | TargetCleared                       | n/a
+ Event | TargetSet                           | n/a
+ Event | Taunt                               | n/a
+
+OK, I can see that I'm starting to use some of the same information multiple places - IDs for actions, for example. I
+really need to put this is a common place. Joy.
+
+What kind of configuration db do I want?
+
+Think I'm gonna write my own. I want something SUPER SIMPLE. INI reader. There we go.
+
+
+
+Global to-do:
+
+1) DONE Start pushing up to GitHub.
+2) Make a container for the build environment.
+3) Add CI/CD via github actions.
+4) DONE Start using github for doing PRs, etc.
+5) DONE Analyze gprof results
+6) DONE Performance optimizations, if necessary.
+7) Add another field to Combat that describes the boss. Create table of area/bosses so we can add the boss to the combat when
+   we see them.
+8) Investigate boost program options library - CLI11 might be interesting
+9) DONE Try profiling run with simple cache and simple metrics.
+10) Add tests for correct add_action. Oops.
+11) NOT DOING Is it reasonable to create abstract caching that could be turned on/off?
+12) Create issue for configuration database

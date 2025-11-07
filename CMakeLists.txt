@@ -119,6 +119,44 @@ if (ENABLE_PROFILING)
   )
 endif()
 
+# ---- Declare statistics library ----
+
+add_library(
+  swtor_combat_statistics_lib
+  STATIC
+  source/combat_statistics.cpp
+  source/actor_tracker.cpp
+)
+
+target_include_directories(
+  swtor_combat_statistics_lib ${warning_guard}
+  PUBLIC 
+  "\$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/source>"
+)
+
+target_link_libraries(
+  swtor_combat_populate_db_lib
+  PRIVATE swtor_combat_explorer_lib
+  Boost::log
+)
+
+target_compile_features(
+  swtor_combat_statistics_lib
+  PUBLIC cxx_std_20
+)
+
+if (ENABLE_PROFILING)
+  target_compile_options(
+    swtor_combat_statistics_lib
+    PRIVATE -pg
+  )
+
+  target_link_options(
+    swtor_combat_statistics_lib
+    PRIVATE -pg
+  )
+endif()
+
 # ---- Declare parser executable ----
 
 # Currently the driver for the parser to just display parsed data.

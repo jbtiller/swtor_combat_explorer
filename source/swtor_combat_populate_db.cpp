@@ -63,9 +63,6 @@ auto main(int argc, char* argv[]) -> int {
         int line_num = 0;
         LogParser lp;
         for(const auto& line : file_reader(log_in)) {
-            if (line_num >= 20000) {
-                break;
-            }
             line_num += 1;
         
             std::string_view linev(line);
