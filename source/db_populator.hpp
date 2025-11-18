@@ -101,17 +101,68 @@ class DbPopulator {
      */
      ~DbPopulator();
 
+    /**
+     * Create necessary table entries to store an event
+     *
+     * This adds rows to all of the tables related to Event and maintains referential integrity.
+     *
+     * @param[in] Event information
+     * @returns New row ID in Event
+     */
     auto populate_from_entry(const LogParserTypes::ParsedLogLine& entry) -> int;
 
+    /**
+     * Mark the logfile currently being populated as complete
+     *
+     * This sets an attribute in the Log_File row corresponding to the current logfile being populated.
+     *
+     * @returns Nothing
+     */
     auto mark_fully_parsed(void) -> void;
 
+    /**
+     * Get the current database version
+     *
+     * The database is versioned via a Version table. The latest row by timestamp is considered the current version.
+     *
+     * The database version might correspond to the version of the combat logfile that can be parsed/populated. Versions
+     * are currently very simple and just count monotonically from 1.
+     *
+     * @returns The current database version as a string.
+     */
     auto db_version() const -> std::string {
         return m_db_version;
     }
 
+    /**
+     * Does the previous stream of logfile events indicate we're in combat?
+     *
+     * We'll be in combat between "combat entered" and "combat exited" events.
+     *
+     * @returns true if we're in combat
+     */
     auto in_combat() const -> bool {
         return m_combat_id.has_value();
     }
+
+    /**
+     * Convert the database event timestamp into a string
+     *
+     * The Event table holds a timestamp that currently is represented as ms past the epoch as this is the highest
+     * resolution available in the logfile.
+     *
+     * The output format, as defined by strftime, is this:
+     *
+     * %Y-%m-%d %H:%M:%S.mmm
+     *
+     * Where "mmm" is the number of milliseconds past the second %S (fractional seconds). Example:
+     *
+     * "2025-10-13 19:42:33.250"
+     *
+     * @param[in] milliseconds past the Unix epoch
+     * @returns Human-readable time string
+     */
+    auto static event_ts_to_str(uint64_t ts) -> std::string;
     
     // Added for type-safety and least-surprise. Needs to be public so tests can access.
     WRAPPER(VerbId, int);

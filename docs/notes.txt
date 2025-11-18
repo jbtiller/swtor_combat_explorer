@@ -371,6 +371,7 @@ Huh, cppreference coroutine_handle has an example!
 Sweet, I used the example in cppreference with a little function of my
 own to make a file reader that works in a range for loop. Nice.
 
+<<<<<<< Updated upstream
 2025-08-14
 
 OK, so how do I do this?
@@ -1835,6 +1836,313 @@ What kind of configuration db do I want?
 
 Think I'm gonna write my own. I want something SUPER SIMPLE. INI reader. There we go.
 
+=======
+OK, working on it - implemented and now testing.
+
+Damn, I've parsed and populated almost 8 million events. Shit.
+
+2025-11-08
+
+Wow, populator finally finished. Took 17 hours, lol. It parsed and populated 10M events. Wow.
+
+Some row information:
+
+Name: 14,104
+Advanced_Class: 49
+Action: 9192
+PC actors: 1663
+NPC actors: 37,811
+Combats: 6089
+Area: 138
+Log_File: 344
+Event: 10,256,807
+
+So, total time was 17:04:15, or 61,455 seconds. Thus, parse/pop rows/sec is:
+
+116.9 rows/sec
+
+That's not terrible, actually. A quick look at the performance counters shows that populate vs parse is about 15x? So,
+then the expected number of rows/sec parsed is
+
+time to parse one row * num_rows + time to populate one row * num_rows = total time
+
+1x * num_rows + 15x * num_rows = total time
+
+num_rows * 16x = total_time
+
+16x = total_time / num_rows
+
+x = total_time / (16 * num_rows)
+
+x = 61455s / (16 * 10256807 rows) = 0.000374 s/row = 0.374 ms/row
+
+This is about 2800 rows/sec. That's what I'm talking about.
+
+I did a bunch of INI stuff, but it's a waste. A damn header file will do. Just make one. Sheesh.
+
+2025-11-09
+
+OK, merged the new searches branch - some TODOs in there but they involve more complex queries than I know how to do yet.
+
+Back to combat statistics.
+
+Tracking damage done in combat. All damage seems to be registered as an "effect" via ApplyEffect, such as:
+
+[20:03:40.877] [src] [tgt] [Rifle Assault {}] [ApplyEffect {}: Damage {836045448945501}] (5824 energy {836045448940874}) <5824.0>
+
+There are other types of "Damage" abilities, but this appears the only way that damage is applied to actors.
+
+I'm getting overwhelmed with all of the stats I *could* collect. For example:
+
+Combat:
+    enter/exit time
+    all actors in combat
+
+Effects:
+    source
+    target
+    effect name/id
+    activation time
+    end time
+    end reason (interrupt, deactivate, cancel)
+
+Actors:
+    damage done by actor
+    damage received by actor
+    deaths
+    X previous damage received before each death
+    revives
+    ability activations:
+        time
+        ability name
+        total damage done
+        list of damage hits
+            time
+            damage
+            damage type?
+    self effects:
+
+I'm still torn between producing real-time stats and post-combat analysis stats. Sheesh.
+
+Do I want an in-memory database? A combination of in-memory database and real-time statistics?
+
+IN-memory database. This mainly looks like an interpretation of the Event table and giving some semantic meaning to the
+events. More like a rearrangement and combining some events together (apply/remove effect, etc.)
+
+Combat:
+  begin
+  end
+  area
+
+CombatActors:
+  type
+  class
+  max health
+
+Effects:
+  effect name
+  applied-by ability
+  source
+  target
+  apply time
+  removal time
+
+Abilities Used
+  actor
+  ability
+  time
+  termination reason (interupt, cancel, deactivate)
+
+Deaths
+  actor
+  time
+  last X events that affected actor
+  last damage hit value
+
+Revives
+  actor
+  time
+
+Damage
+  source
+  target
+  time
+  ability
+  base
+  crit
+  effective
+  type (internal, elemental, kinetic, energy, none)
+  avoid reason (immune, dodge, parry, miss, resist, deflect, none)
+  absorbed amount
+  absorbed reason (shield, none)
+
+Damage per ability activation
+  source
+  target
+  ability
+  effective
+  total
+  mitigated
+
+I'm not sure this is all right, but oh well.
+
+Now, what about realtime statistics:
+
+CombatActor:
+  name
+  pointer to actor table
+  total damge dealt
+  total damage received
+  current dps
+  current dtps
+  current effects
+  current health
+
+Ooh, I think I can find unique abilities. I have a duplicate name finder - just reverse that test. Then weed out
+those that aren't abilities. something like that.
+  
+It appears that damage actions (applyeffect: damage) always have an ability, so they look like this:
+
+[ts] [src] [tgt] [ability] [applyeffect: damage] (val-stuff) <thread>
+
+helpful to roll up damage into ability activations.
+
+1. See self-ability activation. push into queue
+
+2. See damage and note ability.
+
+3. Go through queue and find first ability of same damage type.
+
+4. If another self-ability activation of same type is later in queue, remove the oldest activation.
+
+During this, if we see an ability cancel/interrupt/deactivate then remove oldest ability in queue and consider it rolled up.
+
+Do something clever with rolled up damage.
+
+
+
+Ability activations *always* have the same source/target. So, if Costom uses Boltstorm, there'll be an AbilityActivate
+event where cosmo is the source and target that has:
+
+Ability: Boltstorm
+Action: verb=Event noun=AbilityActivate
+
+Looking debuff effects, like grav round's "gravity vortex" or "Sundered (physical)", they're applied and then they fall
+off. They AREN'T shown as reapplied if they're already active. Hmm.
+
+Timing looks a little off, though. Let's look at grav round's sundered. It's weird:
+
+[13:27:02.263] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:27:04.879] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] 2.6s
+[13:27:06.296] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:27:08.490] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] 0.2s
+[13:27:10.692] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:27:17.100] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] 6.5s
+[13:27:17.686] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:27:21.090] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] 3.4s
+[13:27:21.405] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:27:29.306] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] 7.9s
+[13:27:31.404] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:27:31.899] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] 0.5s
+[13:27:32.501] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:27:39.407] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] 6.9s
+[13:27:46.410] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:27:47.918] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] 1.5s
+[13:27:50.017] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:27:50.305] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] 0.2s
+[13:27:51.210] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:28:07.529] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] 18.3s
+[13:28:37.059] [Keepthefaith)] [Annihilation Droi6)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:28:45.147] [Keepthefaith)] [Annihilation Droi6)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] 8.1s
+[13:28:48.044] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:28:50.540] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] 2.5s
+[13:29:10.743] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:29:11.558] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}] etc.
+[13:29:11.945] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:29:14.050] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}]
+[13:29:14.250] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:29:24.764] [Keepthefaith)] [Annihilation Droi6)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}]
+[13:29:34.058] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:29:38.767] [Keepthefaith] [Annihilation Droid)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}]
+[13:30:15.102] [Keepthefaith)] [Annihilation Droi)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:30:21.316] [Keepthefaith)] [Annihilation Droi)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}]
+[13:30:22.205] [Keepthefaith)] [Annihilation Droi)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:30:25.308] [Keepthefaith)] [Annihilation Droi)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}]
+[13:30:31.416] [Keepthefaith)] [Annihilation Droi)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:30:34.301] [Keepthefaith)] [Annihilation Droi)] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}]
+[13:30:34.717] [Keepthefaith)] [Annihilation Droi)] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:30:39.121] [Keepthefaith] [Annihilation Droid] [Grav Round {}] [RemoveEffect {}: Sundered (Physical) {}]
+
+We see alternating apply/remove, which makes sense. But the times are odd. the effect duration is unpredictable, from
+0.2s to 18s?? WTF?
+
+2025-11-10
+
+As far as doing damage, it looks like we have this pattern:
+
+[13:35:19.223] [src] [=] [Grav Round {}] [Event {}: AbilityActivate {}]
+[13:35:20.832] [src] [tgt] [Grav Round {}] [ApplyEffect {}: Gravity Vortex {}]
+[13:35:20.833] [src] [tgt] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:35:20.891] [src] [tgt] [Grav Round {}] [ApplyEffect {}: Damage {}] (base eff kinetic {}) <threat>
+
+So, the target for the initial ability activation is the source. Then after that, all effects on the enemy will have
+them as the target. The middle 2 will only show up if the target didn't already have those effects.
+
+Note there are some strange orderings in the log. For example, using 2 grav rounds in a row sometimes shows this:
+
+[13:35:59.934] [src] [=] [Grav Round {}] [Event {}: AbilityActivate {}]
+[13:36:01.136] [src] [=] [Grav Round {}] [Event {}: AbilityActivate {}]
+[13:36:01.441] [src] [tgt] [Grav Round {}] [ApplyEffect {}: Sundered (Physical) {}]
+[13:36:01.524] [src] [tgt] [Grav Round {}] [ApplyEffect {}: Damage {}] (16638 kinetic {}) <16638.0>
+[13:36:02.340] [src] [=] [Grav Round {}] [Event {}: AbilityActivate {}]
+[13:36:02.700] [src] [tgt] [Grav Round {}] [ApplyEffect {}: Damage {}] (16083 ~16082 kinetic {}) <16083.0>
+[13:36:03.539] [src] [=] [Grav Round {}] [Event {}: AbilityActivate {}]
+[13:36:03.876] [src] [tgt] [Grav Round {}] [ApplyEffect {}: Damage {}] (15829 ~15830 kinetic {}) <15829.0>
+[13:36:04.830] [src] [=] [Grav Round {}] [Event {}: AbilityActivate {}]
+[13:36:05.224] [src] [tgt] [Grav Round {}] [ApplyEffect {}: Damage {}] (26384* kinetic {}) <26384.0>
+[13:36:06.038] [src] [=] [Grav Round {}] [Event {}: AbilityActivate {}]
+
+So, over around 6s we have:
+
+6 grav round activations: diffs: 1.2s, 1.3s, 1.2s, 1.3s, 1.2s
+4 grav round damages: diffs with activation: 1.6s, 1.6s, 1.5s, 1.7s
+
+Big question: Where do these timestamps come from? Local or server?
+
+This log kinda sucks. Very hard to trust the times. I don't know what to believe. I wonder if other casted abilities
+(abilities that activate at the end of the GCD and not at the beginning.
+
+So, the challenge with this ...
+
+2025-11-11
+
+Working more on the "show unique abilities for each class" query. I ended up trying:
+
+Make a table, "a", that has the ability ID and the class that used it
+
+Make a table, "b", that has the ability ID and the number of distinct classes that used it
+
+join a & b to get this:
+
+ability, class, number of classes that use this ability
+
+then simply only select the rows that only have 1 class using the ability and then dump the ability and class.
+
+It's a big query, but seemed to work OK. But the results aren't quite right:
+
+31,Gunslinger,Dirty Fighting,13742,D-R0M Probe
+31,Gunslinger,Dirty Fighting,5589,Dirty Blast
+31,Gunslinger,Dirty Fighting,5600,Dirty Shot
+31,Gunslinger,Dirty Fighting,5611,Dodge Stance
+31,Gunslinger,Dirty Fighting,5596,Hemorrhaging Blast
+31,Gunslinger,Dirty Fighting,7511,Ikas XK-13
+31,Gunslinger,Dirty Fighting,5767,Illegal Mods
+31,Gunslinger,Dirty Fighting,1287,Major Fleet Requisition Grant
+31,Gunslinger,Dirty Fighting,5598,Smuggler's Chems
+31,Gunslinger,Dirty Fighting,13729,Vectron TM-22 Volo
+31,Gunslinger,Dirty Fighting,5599,Wounding Shots
+
+This looks good - sorta. NO flurry of bolts?
 
 
 Global to-do:
@@ -1851,4 +2159,7 @@ Global to-do:
 9) DONE Try profiling run with simple cache and simple metrics.
 10) Add tests for correct add_action. Oops.
 11) NOT DOING Is it reasonable to create abstract caching that could be turned on/off?
-12) Create issue for configuration database
+12) NOT DOING Create issue for configuration database
+13) Think about combat statistics (damage, heal, etc.)
+14) Write search to show abilities that were activated by only 1 class.
+

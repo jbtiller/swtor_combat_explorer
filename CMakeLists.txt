@@ -125,7 +125,7 @@ add_library(
   swtor_combat_statistics_lib
   STATIC
   source/combat_statistics.cpp
-  source/actor_tracker.cpp
+  source/world_state_tracker.cpp
 )
 
 target_include_directories(
@@ -270,6 +270,7 @@ target_compile_features(
 
 target_link_libraries(
   swtor_combat_search_db_exe
+  swtor_combat_populate_db_lib
   Boost::log
   gflags
   pqxx

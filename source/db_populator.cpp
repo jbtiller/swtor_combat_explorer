@@ -139,6 +139,18 @@ auto DbPopulator::mark_fully_parsed(void) -> void {
     m_tx->exec("UPDATE Log_File SET fully_parsed = TRUE WHERE id = $1", pqxx::params(m_logfile_id));
 }
 
+auto DbPopulator::event_ts_to_str(uint64_t ts) -> std::string {
+    char timestr[64];
+    time_t sec = ts / 1000;
+    uint64_t ms = ts % 1000;
+
+    auto tm = *std::localtime(&sec);
+
+    std::strftime(timestr, 64, "%Y-%m-%d %H:%M:%S", &tm);
+    std::sprintf(timestr + strlen(timestr), ".%lu", ms);
+    return std::string(timestr);
+}
+
 // A simple but inefficient implementation - see if the name_id is in the database and if not populate it.
 auto DbPopulator::add_name_id(const lpt::NameId& name_id) -> int {
     MeasureScope meas(measure_add_name_id);
