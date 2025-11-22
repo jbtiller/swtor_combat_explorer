@@ -2144,6 +2144,82 @@ It's a big query, but seemed to work OK. But the results aren't quite right:
 
 This looks good - sorta. NO flurry of bolts?
 
+2025-11-19
+
+Weekend concerts good, hurt ankle, hobble around, blah blah.
+
+It seems like sometimes people take damage from no source. Consider:
+
+$ ./build/dev/swtor_combat_search_db --dump_event_by_id=49434
+Pretty-printing event with ID=49434
+row_id,ts,src_name,tgt_name,ability_name,action_desc
+49434,2025-03-21 06:58:55.250,n/a,Ehr�n,Bleeding (Physical),ApplyEffect: Damage/n/a
+
+This happens rarely, from what I can tell.
+
+It looks to me like it happens near to when an enemy dies as there's no longer a valid source for the damage. But it
+does happen.
+
+Also, activating an ability (Event: AbilityActivate) always has a source and target (never null) and they're always the
+same. This is because activating an ability occurs before any damage goes out or other effects.
+
+$ psql -d swtor_combat_explorer -c "select Event.id from Event join Action on Event.action = Action.id join Name on Action.noun = Name.id where Name.name = 'AbilityActivate' and (Event.source IS NULL or  Event.target is null);"
+ id 
+----
+(0 rows)
+
+$ psql -d swtor_combat_explorer -c "select Event.id from Event join Action on Event.action = Action.id join Name on Action.noun = Name.id where Name.name = 'AbilityActivate' and Event.source != Event.target;"
+ id 
+----
+(0 rows)
+
+2025-11-20
+
+There seem to be instances (many?) where there are two or more EnterCombats in a row. It looks very strange. I'm looking
+here:
+
+test/logs/combat_2025-05-09_19_11_53_848994.txt
+
+$ egrep 'EnterCombat|ExitCombat' test/logs/combat_2025-05-09_19_11_53_848994.txt
+[19:16:48.746] [@Wiely#|(473.07,2439.22,301.46,1.64)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+[19:18:22.496] [@Wiely#|(489.39,2480.37,297.61,-137.86)|(438333/438333)] [] [] [Event {836045448945472}: ExitCombat {836045448945490}]
+[19:18:30.043] [@Wiely#|(493.82,2493.19,302.97,-176.83)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+[19:19:02.455] [@Wiely#|(479.53,2539.22,307.61,-119.12)|(438333/438333)] [] [] [Event {836045448945472}: ExitCombat {836045448945490}]
+[19:19:12.446] [@Wiely#|(460.11,2556.46,307.61,-42.15)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+[19:20:24.980] [@Wiely#|(455.62,2602.15,317.61,118.31)|(403571/438333)] [] [] [Event {836045448945472}: ExitCombat {836045448945490}]
+[19:20:35.771] [@Wiely#|(409.18,2643.45,322.68,139.06)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+[19:21:03.411] [@Wiely#|(414.98,2644.00,322.44,90.87)|(438333/438333)] [] [] [Event {836045448945472}: ExitCombat {836045448945490}]
+[19:21:07.673] [@Wiely#|(405.68,2643.46,322.68,-176.53)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+[19:21:30.290] [@Wiely#|(408.81,2678.55,322.31,103.88)|(438333/438333)] [] [] [Event {836045448945472}: ExitCombat {836045448945490}]
+[19:21:44.009] [@Wiely#|(406.43,2713.56,322.58,-133.77)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+[19:22:35.844] [@Wiely#|(478.12,2731.77,322.19,162.47)|(438333/438333)] [] [] [Event {836045448945472}: ExitCombat {836045448945490}]
+x [19:24:21.710] [@Wiely#|(481.88,2779.58,317.41,8.44)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [19:31:27.997] [@Wiely#|(482.64,2779.90,317.41,12.90)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [19:38:19.027] [@Wiely#|(482.28,2779.18,317.41,13.66)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [19:46:39.981] [@Wiely#|(481.96,2780.16,317.41,6.66)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [19:54:54.710] [@Wiely#|(482.01,2780.49,317.41,12.00)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [20:03:52.678] [@Wiely#|(482.86,2781.72,317.41,11.77)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [20:10:04.820] [@Wiely#|(482.64,2783.01,317.41,11.09)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [20:15:51.902] [@Wiely#|(482.51,2781.92,317.41,7.20)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [20:24:07.143] [@Wiely#|(481.94,2781.04,317.41,11.17)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [20:31:28.667] [@Wiely#|(482.19,2780.67,317.41,13.71)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [20:37:13.519] [@Wiely#|(482.06,2782.04,317.41,9.83)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [20:40:35.251] [@Wiely#|(482.85,2782.10,317.41,17.48)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [20:49:17.534] [@Wiely#|(482.25,2781.56,317.41,9.62)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [20:59:34.420] [@Wiely#|(482.76,2783.06,317.41,16.67)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+x [21:06:48.634] [@Wiely#|(-36.28,0.92,-0.66,129.15)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+[21:08:02.479] [@Wiely#|(-36.28,0.92,-0.66,129.15)|(438333/438333)] [] [] [Event {836045448945472}: ExitCombat {836045448945490}]
+[21:09:52.730] [@Wiely#|(-36.70,0.84,-0.70,130.80)|(438333/438333)] [] [] [Event {836045448945472}: EnterCombat {836045448945489}]
+[21:13:40.103] [@Wiely#|(-36.70,0.84,-0.70,130.01)|(438333/438333)] [] [] [Event {836045448945472}: ExitCombat {836045448945490}]
+
+The lines that start with 'x' are all enter combat - like 20 of them in a row. Where are all the exit combats?
+
+Let's check all of these events and how I parsed them.
+
+Querying row by row is WAY TOO F'ING SLOW. So, query all event rows at once and then apply name filter. Much more efficient.
+
+But is rewrite, so commit first.
+
 
 Global to-do:
 

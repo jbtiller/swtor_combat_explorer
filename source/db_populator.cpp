@@ -442,13 +442,16 @@ auto DbPopulator::populate_from_entry(const lpt::ParsedLogLine& entry) -> int {
     // event enters combat, we need to know the ID of the current Combat row.
     if (entry.action.noun.cref().id == ENTER_COMBAT_ID) {
         record_enter_combat(entry.ts);
-    } else if (entry.action.noun.cref().id == EXIT_COMBAT_ID) {
-        record_exit_combat(entry.ts);
     }
 
     std::optional<int> src_actor_id {};
 
     append_or_null(params, /*2*/m_combat_id);
+
+    // We want the "combat exit" to be included in the current combat.
+    if (entry.action.noun.cref().id == EXIT_COMBAT_ID) {
+        record_exit_combat(entry.ts);
+    }
 
     int source_pc_actor_row_id {};
     if (entry.source) {

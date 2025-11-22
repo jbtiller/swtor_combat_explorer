@@ -39,10 +39,13 @@ DEFINE_bool(all_class_unique_abilities, false, "Show unique abilities for each c
 DEFINE_bool(all_classes,                false, "Show all classes");
 DEFINE_bool(all_combats,                false, "Show all combats");
 DEFINE_bool(all_effects,                false, "Show all effects");
+DEFINE_int32(all_events_in_combat,      -1,    "Pretty-print all events in the specified combat by the row id");
+DEFINE_string(all_events_in_logfile,    "",    "Pretty-print all events in specified logfile filename");
 // TODO
 DEFINE_string(class_unique_abilities,   "",    "Show unique abilities for a specific class in the form \"style,discipline\"");
 DEFINE_string(combat_abilities_for_class,  "", "Show abilities used in combat by class in form \"style,discipline\"");
 DEFINE_int32(dump_event_by_id,          -1,    "Pretty-print the event with the supplied integer ID");
+DEFINE_string(dump_events_by_id,        "",    "Pretty-print the range of events provided as 'beg-end'");
 DEFINE_bool(duplicate_name_counts,      false, "Show how many names have the same string but different id");
 DEFINE_string(find_name,                "",    "Given an integer, searches as a row ID or Name ID, otherwise searches as a 'LIKE' pattern;"
                                                " print row ID, name ID, and name as \"name {row_id:name_id}\"");
@@ -52,31 +55,73 @@ DEFINE_bool(num_logfiles,               false, "Show number of Log_Files");
 DEFINE_string(name_details,             "t",   "What to show for Names; a combination of 't' for the name text, 'r' for the Name row ID, and 'i' for the Name ID");
 DEFINE_bool(pcs_in_combats,             false, "Show all PCs in all combats");
 
+static const char* event_header{
+    /*0,1*/      "event_id,event_timestamp"
+    /*2,3,4*/    ",src_id,src_name_id,src_name"
+    /*5,6,7*/    ",tgt_id,tgt_name_id,tgt_name"
+    /*8,9,10*/   ",ability_id,ability_name_id,ability_name"
+    /*11,12,13*/ ",action_verb_id,action_verb_name_id,action_verb_name"
+    /*14,15,16*/ ",action_noun_id,action_noun_name_id,action_noun_name"
+    /*17,18,19*/ ",action_detail_id,action_detail_name_id,action_detail_name"
+};
+static const char* event_select_columns{
+    /*0,1*/      "event.id, event.ts"
+    /*2,3,4*/    "src.id, src.name_id, src.name"
+    /*5,6,7*/    "tgt.id, tgt.name_id, tgt.name"
+    /*8,9,10*/   "ability.id, ability.name_id, ability.name"
+    /*11,12,13*/ "action_verb.id, action_verb.name_id, action_verb.name"
+    /*14,15,16*/ "action_noun.id, action_noun.name_id, action_noun.name"
+    /*17,18,19*/ "action_detail.id, action_detail.name_id, action_detail.name"
+};
+static const char* event_joins{
+    // We use LEFT JOIN here because it will handle NULLs in the FKs, since we have a bunch of nullable FKs. A standard
+    // (INNER) JOIN would fail because if the FK is NULL then an (INNER) JOIN would fail none of the referred row would
+    // who up in the joined row. With the LEFT (OUTER) JOIN, a NULL FK will fail to match but the referred rows columns
+    // will be joined but filled with NULLs.
+    "     LEFT JOIN Actor AS src_act ON Event.source = src_act.id"
+    "       LEFT JOIN Name AS src_name ON src_act.name = src_name.id"
+    "     LEFT JOIN Actor AS tgt_act ON Event.target = tgt_act.id"
+    "       LEFT JOIN Name AS tgt_name ON tgt_act.name = tgt_name.id"
+    "     LEFT JOIN Name AS ability_name ON Event.ability = ability_name.id"
+    "     JOIN Action AS action ON Event.action = action.id"
+    "       JOIN Name AS action_verb ON action.verb = action_verb.id"
+    "       JOIN Name AS action_noun ON action.noun = non_verb.id"
+    "       LEFT JOIN Name AS action_detail ON action.detail = action_detail.id"
+};
+
+auto construct_event_query(const char* where_clause) -> std::string {
+    assert(where_clause);
+    return std::format("SELECT {} FROM Event {} WHERE {}",
+                       event_select_columns,
+                       event_joins,
+                       where_clause);
+}
+
 auto pretty_print_name_id(int row_id, uint64_t name_id, const std::string_view name) {
     auto t = FLAGS_name_details.find('t') != std::string::npos;
     auto r = FLAGS_name_details.find('r') != std::string::npos;
     auto i = FLAGS_name_details.find('i') != std::string::npos;
-    auto bits = (t << 2) + (r << 1) + i;
-    // tri
+    auto bits = (r << 2) + (i << 1) + t;
+    // rit
     switch (bits) {
       case 0b111:
-        return std::format("{} {{{}:{}}}", name, row_id, name_id);
+        return std::format("{},{},{}", row_id, name_id, name);
       case 0b110:
-        return std::format("{} {{{}}}", name, row_id);
+        return std::format("{},{},{}", row_id, name_id, "");
       case 0b101:
-        return std::format("{} {{{}}}", name, name_id);
+        return std::format("{},{},{}", row_id, "",      name);
       case 0b100:
-        return std::format("{}", name);
+        return std::format("{},{},{}", row_id, "",      "");
       case 0b011:
-        return std::format("{}:{}", row_id, name_id);
+        return std::format("{},{},{}", "",     name_id, name);
       case 0b010:
-        return std::format("{}", row_id);
+        return std::format("{},{},{}", "",     name_id, "");
       case 0b001:
-        return std::format("{}", name_id);
+        return std::format("{},{},{}", "",     "",     name);
       case 0b000:
-        return std::format("{}", name);
+        return std::format("{},{},{}", "",     "",     name);
       default:
-        return std::format("{}", name);
+        return std::format("{},{},{}", "",     "",     name);
     }
 }
 
@@ -101,12 +146,28 @@ auto pretty_print_class(pqxx::nontransaction& tx, int row_id) -> std::string {
     return std::format("{} {}", pretty_print_name(tx, style), pretty_print_name(tx, discipline));
 }
 
-auto pretty_print_event(pqxx::nontransaction& tx, int row_id) -> std::string {
+auto pretty_print_event_row(pqxx::nontransaction& tx, const pqxx::row& row) -> std::string {
+    auto row_id = row[0].as<int>();
+    auto ts = row[1].as<uint64_t>();
+    auto src_name = !row[2].is_null() ? row[2].as<int>() : DbPopulator::NOT_APPLICABLE_ROW_ID;
+    auto tgt_name = !row[3].is_null() ? row[3].as<int>() : DbPopulator::NOT_APPLICABLE_ROW_ID;
+    auto ability_name = !row[4].is_null() ? row[4].as<int>() : DbPopulator::NOT_APPLICABLE_ROW_ID;
+    auto action_desc = pretty_print_action(tx, row[5].as<int>());
+    return std::format("{},{},{},{},{},{}",
+                        row_id,
+                           DbPopulator::event_ts_to_str(ts),
+                              pretty_print_name(tx, src_name),
+                                 pretty_print_name(tx, tgt_name),
+                                    pretty_print_name(tx, ability_name),
+                                       action_desc);
+}
+
+auto pretty_print_event_by_id(pqxx::nontransaction& tx, int row_id) -> std::string {
     // We use LEFT JOIN here because it will handle NULLs in the FKs, since we have a bunch of nullable FKs. A standard
     // (INNER) JOIN would fail because if the FK is NULL then an (INNER) JOIN would fail none of the referred row would
     // who up in the joined row. With the LEFT (OUTER) JOIN, a NULL FK will fail to match but the referred rows columns
     // will be joined but filled with NULLs.
-    auto res = tx.exec(" SELECT ts, src_name.id, tgt_name.id, ability_name.id, action FROM Event"
+    auto res = tx.exec(" SELECT Event.id, ts, src_name.id, tgt_name.id, ability_name.id, Event.action FROM Event"
                        "     LEFT JOIN Actor AS src_act ON Event.source = src_act.id"
                        "       LEFT JOIN Name AS src_name ON src_act.name = src_name.id"
                        "     LEFT JOIN Actor AS tgt_act ON Event.target = tgt_act.id"
@@ -114,18 +175,7 @@ auto pretty_print_event(pqxx::nontransaction& tx, int row_id) -> std::string {
                        "     LEFT JOIN Name AS ability_name ON Event.ability = ability_name.id"
                        " WHERE Event.id = $1", row_id);
     auto row = res.one_row();
-    auto ts = row[0].as<uint64_t>();
-    auto src_name = !row[1].is_null() ? row[1].as<int>() : DbPopulator::NOT_APPLICABLE_ROW_ID;
-    auto tgt_name = !row[2].is_null() ? row[2].as<int>() : DbPopulator::NOT_APPLICABLE_ROW_ID;
-    auto ability_name = !row[3].is_null() ? row[3].as<int>() : DbPopulator::NOT_APPLICABLE_ROW_ID;
-    auto action_desc = pretty_print_action(tx, row[4].as<int>());
-    return std::format("{},{},{},{},{},{}\n",
-                        row_id,
-                           DbPopulator::event_ts_to_str(ts),
-                              pretty_print_name(tx, src_name),
-                                 pretty_print_name(tx, tgt_name),
-                                    pretty_print_name(tx, ability_name),
-                                       action_desc);
+    return pretty_print_event_row(tx, row);
 }
 
 auto style_disc_from_csv_string(const std::string& pair) -> std::optional<std::pair<std::string_view,std::string_view>> {
@@ -351,15 +401,22 @@ auto main(int argc, char* argv[]) -> int {
     }
     if (FLAGS_all_combats) {
         std::cout << "You requested all combats.\n";
-        auto res = tx.exec("SELECT ts_begin, an.name, lf.filename FROM Combat"
-                           "    JOIN Area as ar  ON Combat.area = ar.id" 
-                           "      JOIN Name as an  ON ar.area = an.id"
-                           "    JOIN Log_File as lf ON combat.logfile = lf.id"
-                           "  ORDER BY an.name");
-        std::cout << "begin_ts,area,logfile\n";
+        auto res = tx.exec(" SELECT Combat.id, ts_begin, combat_info.combat_size, an.name, lf.filename FROM Combat"
+                           "     JOIN Area as ar  ON Combat.area = ar.id" 
+                           "       JOIN Name as an  ON ar.area = an.id"
+                           "     JOIN Log_File as lf ON combat.logfile = lf.id"
+                           "     JOIN (SELECT e.combat AS combat_id, COUNT(*) AS combat_size FROM Event AS e "
+                           "               WHERE e.combat IS NOT NULL"
+                           "           GROUP BY e.combat) AS combat_info ON Combat.id = combat_info.combat_id"
+                           " ORDER BY an.name");
+        std::cout << "combat_id,begin_ts,combat_length,area,logfile\n";
         for (auto row : res) {
-            auto [begin_ts, area, logfile] = row.as<uint64_t,std::string_view,std::string_view>();
-            std::cout << begin_ts << "," << area << "," << logfile << "\n";
+            auto combat_id = row[0].as<int>();
+            auto begin_ts = row[1].as<uint64_t>();
+            auto combat_length = row[2].as<int>();
+            auto area = row[3].as<std::string_view>();
+            auto logfile = row[4].as<std::string_view>();
+            std::cout << std::format("{},{},{},{},{}\n", combat_id, begin_ts, combat_length, area, logfile);
         }
         std::cout << res.size() << " rows\n";
     }
@@ -517,11 +574,46 @@ auto main(int argc, char* argv[]) -> int {
         }
         std::cout << res.size() << " rows\n";
     }
-
     if (FLAGS_dump_event_by_id != -1) {
         std::cout << "Pretty-printing event with ID=" << FLAGS_dump_event_by_id << "\n";
         std::cout << "row_id,ts,src_name,tgt_name,ability_name,action_desc\n";
-        std::cout << pretty_print_event(tx, FLAGS_dump_event_by_id) << "\n";
+        std::cout << pretty_print_event_by_id(tx, FLAGS_dump_event_by_id) << "\n";
+    }
+    if (!FLAGS_dump_events_by_id.empty()) {
+        std::cout << "Pretty-printing events from IDs " << std::quoted(FLAGS_dump_events_by_id) << "\n";
+        auto dash_pos = std::find(FLAGS_dump_events_by_id.begin(), FLAGS_dump_events_by_id.end(), '-');
+        if (dash_pos == FLAGS_dump_events_by_id.end()) {
+            std::cout << "Event ID range is incorrectly formatted - missing the '-' between begin and end IDs\n";
+            return -1;
+        }
+        auto beg_str = std::string(FLAGS_dump_events_by_id.begin(), dash_pos);
+        auto end_str = std::string(std::next(dash_pos), FLAGS_dump_events_by_id.end());
+        auto beg = std::stoi(beg_str);
+        auto end = std::stoi(end_str);
+
+        auto res = tx.exec("SELECT id FROM Event WHERE id BETWEEN $1 AND $2", pqxx::params(beg, end));
+        if (res.empty()) {
+            std::cout << "No events found in specified ID range.\n";
+            return 0;
+        }
+        std::cout << event_header << "\n";
+        std::for_each(res.begin(), res.end(), [&tx] (pqxx::row row) {std::cout << pretty_print_event_by_id(tx, row[0].as<int>()) << "\n";});
+        std::cout << res.size() << " rows\n";
+    }
+    if (FLAGS_all_events_in_combat != -1) {
+        std::cout << "Pretty-printing all events in combat with ID=" << FLAGS_all_events_in_combat << "\n";
+        std::cout << event_header << "\n";
+        auto res = tx.exec("SELECT id FROM Event WHERE combat = $1", pqxx::params(FLAGS_all_events_in_combat));
+        for (auto row : res) {
+            std::cout << pretty_print_event_by_id(tx, row[0].as<int>()) << "\n";
+        }
+        std::cout << res.size() << " rows\n";
+    }
+    // DEFINE_string(all_events_in_logfile,    "",    "Pretty-print all events in specified logfile filename");
+    if (!FLAGS_all_events_in_logfile.empty()) {
+        // This current strategy is terribly slow, finding one event at a time and then decorating each Name based on
+        // the options. Ugh.
+        
     }
 
     return 0;

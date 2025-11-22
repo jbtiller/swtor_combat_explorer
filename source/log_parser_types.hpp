@@ -99,4 +99,14 @@ namespace LogParserTypes {
 	std::optional<Value> value;
 	std::optional<Threat> threat;
     };
+
+    inline auto actor_id_from(const Actor& act) -> uint64_t {
+        if (std::holds_alternative<PcActor>(act)) {
+            return std::get<PcActor>(act).id;
+        } else if (std::holds_alternative<NpcActor>(act)) {
+            return std::get<NpcActor>(act).name_id.id;
+        } else {
+            return std::get<CompanionActor>(act).companion.name_id.id;
+        }
+    }
 } // namespace LogParserTypes
