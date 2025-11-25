@@ -2220,6 +2220,20 @@ Querying row by row is WAY TOO F'ING SLOW. So, query all event rows at once and 
 
 But is rewrite, so commit first.
 
+2025-11-25
+
+OK, finally rewrote the searcher to speed up name searches. Now takes like 5s to do an entire 260k logfile. I can live
+with that.
+
+I'm looking at the logfile with lots of EnterCombats in a row. Let's look at this one:
+
+Line 30495:
+8552534,combat_2025-05-09_19_11_53_848994.txt,,1746818463411,,,Wiely,,,,,,,,,Event,,,ExitCombat,,,n/a
+
+Let's also look at Deaths.
+
+TODO: still trying to understand this. I need to get a sense of the difference in timestamps between events. Let's
+translate db timestamps into human-readable ones.
 
 Global to-do:
 
